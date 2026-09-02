@@ -1,0 +1,11 @@
+# Kubeconfig inputs may contain credentials. Never commit them.
+*.yaml
+*.yml
+*.json
+*-kubeconfig
+kube-resource-top
+
+# Keep source dependency files.
+!go.mod
+!go.sum
+.scratch/
