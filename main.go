@@ -80,7 +80,7 @@ type model struct {
 	width, height                                       int
 	search                                              string
 	searching                                           bool
-	viewMode                                            int
+	viewMode, nodeScope                                 int
 	nodeBalance                                         bool
 	cfg                                                 config
 	targets                                             []target
@@ -111,6 +111,13 @@ var yellow = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 var red = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
 var gray = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
 var selectedStyle = lipgloss.NewStyle().Background(lipgloss.Color("24"))
+
+const (
+	nodeScopeDrill = iota
+	nodeScopeAll
+	nodeScopeContexts
+	nodeScopeResources
+)
 
 func main() {
 	dir := flag.String("kubeconfig-dir", "", "directory containing kubeconfig files (required)")
@@ -556,6 +563,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			rs := m.filteredDisplayRows()
 			if !m.nodeBalance && m.viewMode != 2 && len(rs) > 0 {
+				m.resource = rs[m.cursor].resource
 				m.scope = append(m.scope, rs[m.cursor].key)
 				m.viewMode = 0
 				m.cursor = 0
@@ -600,11 +608,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "v":
-			m.nodeBalance = false
-			m.viewMode = (m.viewMode + 1) % 3
+			if m.nodeBalance {
+				m.nodeScope = (m.nodeScope + 1) % 4
+			} else {
+				m.viewMode = (m.viewMode + 1) % 3
+			}
 			m.cursor = 0
 		case "b":
 			m.nodeBalance = !m.nodeBalance
+			if m.nodeBalance {
+				m.nodeScope = nodeScopeDrill
+			}
 			m.cursor = 0
 			m.search, m.searching = "", false // ponytail: stale drill-down search would hide every node in the balance view
 			if m.nodeBalance {
@@ -906,62 +920,74 @@ func (m *model) updateAlias(k string) (tea.Model, tea.Cmd) {
 }
 
 type nodeRow struct {
-	name      string
-	targetID  string
-	nodeName  string
-	capacity  resource.Quantity
-	requested resource.Quantity
-	pending   resource.Quantity
+	name, targetID, context, nodeName string
+	resource                          corev1.ResourceName
+	capacity, requested, pending      resource.Quantity
 }
 
+func (m model) nodeResources() []corev1.ResourceName {
+	switch m.nodeScope {
+	case nodeScopeAll:
+		return m.availableResources()
+	case nodeScopeResources:
+		return m.selectedResources()
+	default:
+		return []corev1.ResourceName{m.resource}
+	}
+}
+func (m model) nodeIncludesTarget(id string) bool {
+	if m.nodeScope == nodeScopeDrill && len(m.scope) > 0 {
+		return id == m.scope[0]
+	}
+	if len(m.selected) == 0 { // snapshots without the interactive selector
+		return true
+	}
+	return m.selected[id]
+}
 func (m model) nodeRows() []nodeRow {
-	rows := map[string]*nodeRow{}
+	var out []nodeRow
 	for _, snapshot := range m.snaps {
-		if snapshot.Err != "" {
+		if snapshot.Err != "" || !m.nodeIncludesTarget(snapshot.Target.ID) {
 			continue
 		}
-		// Pending pods have no assigned Node, so their demand is cluster-level;
-		// it is shown on every Node of that cluster as unscheduled demand.
-		// Offloaded (Liqo virtual-node) pending pods are remote/backoff work,
-		// not local consumer demand — excluded to avoid inflating the count.
-		var clusterPending resource.Quantity
-		for _, pod := range snapshot.Pods {
-			if pod.Phase == corev1.PodPending && !pod.Offloaded {
-				clusterPending.Add(pod.Requests[m.resource])
+		for _, resourceName := range m.nodeResources() {
+			var pending resource.Quantity
+			for _, pod := range snapshot.Pods {
+				if pod.Phase == corev1.PodPending && !pod.Offloaded {
+					pending.Add(pod.Requests[resourceName])
+				}
 			}
-		}
-		for _, node := range snapshot.Nodes {
-			capacity := node.Capacity[m.resource]
-			if capacity.IsZero() {
-				continue
+			rows := map[string]*nodeRow{}
+			for _, node := range snapshot.Nodes {
+				capacity := node.Capacity[resourceName]
+				if capacity.IsZero() {
+					continue
+				}
+				name := node.IP
+				if name == "" {
+					name = node.Name
+				}
+				rows[node.Name] = &nodeRow{name: name, targetID: snapshot.Target.ID, context: display(snapshot.Target.Context), nodeName: node.Name, resource: resourceName, capacity: capacity, pending: pending}
 			}
-			key := snapshot.Target.ID + "/" + node.Name
-			name := node.IP
-			if name == "" {
-				name = node.Name
+			for _, pod := range snapshot.Pods {
+				if pod.Phase == corev1.PodRunning && pod.NodeName != "" && rows[pod.NodeName] != nil {
+					rows[pod.NodeName].requested.Add(pod.Requests[resourceName])
+				}
 			}
-			rows[key] = &nodeRow{name: name, targetID: snapshot.Target.ID, nodeName: node.Name, capacity: capacity, pending: clusterPending}
-		}
-		for _, pod := range snapshot.Pods {
-			if pod.Phase != corev1.PodRunning || pod.NodeName == "" {
-				continue
-			}
-			if row := rows[snapshot.Target.ID+"/"+pod.NodeName]; row != nil {
-				row.requested.Add(pod.Requests[m.resource])
+			for _, row := range rows {
+				out = append(out, *row)
 			}
 		}
 	}
-	out := make([]nodeRow, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, *row)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name < out[j].name })
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].context+"\x00"+string(out[i].resource)+"\x00"+out[i].name < out[j].context+"\x00"+string(out[j].resource)+"\x00"+out[j].name
+	})
 	if m.search == "" {
 		return out
 	}
 	filtered := out[:0]
 	for _, row := range out {
-		if strings.Contains(strings.ToLower(row.name), strings.ToLower(m.search)) {
+		if strings.Contains(strings.ToLower(row.name+" "+row.context+" "+string(row.resource)), strings.ToLower(m.search)) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -981,7 +1007,7 @@ func (m model) nodeFragMax() int { return max(3, m.height-8-m.nodePageSize()) }
 
 // nodePendingPods returns pending pods in the given cluster that request the
 // active resource (they have no assigned Node, so they are cluster-level demand).
-func (m model) nodePendingPods(targetID string) []pod {
+func (m model) nodePendingPods(targetID string, resourceName corev1.ResourceName) []pod {
 	for _, snapshot := range m.snaps {
 		if snapshot.Target.ID != targetID {
 			continue
@@ -991,7 +1017,7 @@ func (m model) nodePendingPods(targetID string) []pod {
 			if pod.Phase != corev1.PodPending || pod.Offloaded {
 				continue
 			}
-			req := pod.Requests[m.resource]
+			req := pod.Requests[resourceName]
 			if req.IsZero() {
 				continue
 			}
@@ -1005,7 +1031,7 @@ func (m model) nodePendingPods(targetID string) []pod {
 
 // nodePods returns running pods on the given node that request the active
 // resource, already alias-scaled to match the node table's capacity column.
-func (m model) nodePods(targetID, nodeName string) []pod {
+func (m model) nodePods(targetID, nodeName string, resourceName corev1.ResourceName) []pod {
 	for _, snapshot := range m.snaps {
 		if snapshot.Target.ID != targetID {
 			continue
@@ -1015,7 +1041,7 @@ func (m model) nodePods(targetID, nodeName string) []pod {
 			if pod.Phase != corev1.PodRunning || pod.NodeName != nodeName {
 				continue
 			}
-			req := pod.Requests[m.resource]
+			req := pod.Requests[resourceName]
 			if req.IsZero() {
 				continue
 			}
@@ -1263,6 +1289,11 @@ func (m model) availableResources() []corev1.ResourceName {
 		for k := range s.Capacity {
 			seen[k] = true
 		}
+		for _, node := range s.Nodes {
+			for k := range node.Capacity {
+				seen[k] = true
+			}
+		}
 	}
 	resources := make([]corev1.ResourceName, 0, len(seen))
 	for k := range seen {
@@ -1509,16 +1540,19 @@ func (m model) aliasView() string {
 	b.WriteString("\nLabels and annotations: key=value,key=value; Unit: underlying units per displayed alias\n↑↓/Tab field  Enter next  Ctrl+S save  Esc list")
 	return b.String()
 }
+func (m model) nodeScopeName() string {
+	return []string{"drill", "all", "contexts", "resources"}[m.nodeScope]
+}
 func (m model) nodeBalanceView() string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("kube-resource-top  nodes: All clusters  resource: %s\n", m.resource))
+	b.WriteString(fmt.Sprintf("kube-resource-top  nodes: %s  resource: %s\n", m.nodeScopeName(), m.resource))
 	rows, start, end := m.nodeVisibleRows()
-	nameW := m.nameWidth(nodeNames(rows), 70, 12)
-	b.WriteString("\n" + tableLine("  ", []int{nameW, 14, 14, 14, 14}, "NODE", "ALLOCATABLE", "REQUESTED", "PENDING", "AVAILABLE") + "\n")
+	nameW := m.nameWidth(nodeNames(rows), 112, 12)
+	b.WriteString("\n" + tableLine("  ", []int{nameW, 18, 22, 14, 14, 14, 14}, "NODE", "CONTEXT", "RESOURCE", "ALLOCATABLE", "REQUESTED", "PENDING", "AVAILABLE") + "\n")
 	for i, row := range rows {
 		available := row.capacity.DeepCopy()
 		available.Sub(row.requested)
-		line := tableLine("> ", []int{nameW, 14, 14, 14, 14}, fit(row.name, nameW), render(row.capacity), render(row.requested), render(row.pending), render(available))
+		line := tableLine("> ", []int{nameW, 18, 22, 14, 14, 14, 14}, fit(row.name, nameW), trim(row.context, 18), trim(string(row.resource), 22), render(row.capacity), render(row.requested), render(row.pending), render(available))
 		if start+i == m.cursor {
 			line = selectedStyle.Render(line)
 		}
@@ -1526,7 +1560,7 @@ func (m model) nodeBalanceView() string {
 	}
 	b.WriteString(gray.Render(fmt.Sprintf("rows %d-%d/%d  PgUp/PgDn page  / search\n", start+1, end, len(m.nodeRows()))))
 	b.WriteString(m.nodeFragPanel(rows, start))
-	b.WriteString(gray.Render("↑↓ select  b/Esc back  3/Tab next resource  m resources  q quit"))
+	b.WriteString(gray.Render("↑↓ select  b/Esc back  v scope  3/Tab next resource  m resources  c contexts  q quit"))
 	return b.String()
 }
 
@@ -1543,8 +1577,8 @@ func (m model) nodeFragPanel(visible []nodeRow, start int) string {
 	} else {
 		return ""
 	}
-	running := m.nodePods(sel.targetID, sel.nodeName)
-	pending := m.nodePendingPods(sel.targetID)
+	running := m.nodePods(sel.targetID, sel.nodeName, sel.resource)
+	pending := m.nodePendingPods(sel.targetID, sel.resource)
 	available := sel.capacity.DeepCopy()
 	available.Sub(sel.requested)
 	var b strings.Builder
@@ -1578,7 +1612,7 @@ func (m model) nodeFragPanel(visible []nodeRow, start int) string {
 		if e.status == "PENDING" {
 			status = yellow.Render(status)
 		}
-		b.WriteString(tableLine("  ", []int{nameW, 9, 12}, fit(name, nameW), status, render(e.pod.Requests[m.resource])) + "\n")
+		b.WriteString(tableLine("  ", []int{nameW, 9, 12}, fit(name, nameW), status, render(e.pod.Requests[sel.resource])) + "\n")
 	}
 	if more > 0 {
 		b.WriteString(gray.Render(fmt.Sprintf("  +%d more\n", more)))

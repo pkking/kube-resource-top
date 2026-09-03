@@ -26,7 +26,7 @@ func TestNodePodsCountsRunningRequestsAndSkipsOthers(t *testing.T) {
 		{Namespace: "ns", Name: "pending", NodeName: "node-a", Phase: corev1.PodPending, Requests: qtys{gpu: resource.MustParse("5")}},
 		{Namespace: "ns", Name: "other", NodeName: "node-b", Phase: corev1.PodRunning, Requests: qtys{gpu: resource.MustParse("1")}},
 	}}}}
-	pods := m.nodePods("c", "node-a")
+	pods := m.nodePods("c", "node-a", gpu)
 	if len(pods) != 2 {
 		t.Fatalf("pods=%d, want 2", len(pods))
 	}
@@ -68,21 +68,53 @@ func TestNameWidthFitsLongestBoundedByTerminal(t *testing.T) {
 	}
 }
 
-func TestBFromDrilledClusterShowsNodesImmediately(t *testing.T) {
+func TestBFromDrilledClusterShowsOnlyItsNodes(t *testing.T) {
 	gpu := corev1.ResourceName("example.com/gpu")
 	m := model{resource: gpu, width: 200, height: 40, snaps: map[string]snapshot{
-		"c": {Target: target{ID: "c", Context: "cluster"}, Nodes: []nodeInfo{{Name: "node-a", Capacity: qtys{}}}},                  // no gpu capacity
+		"c": {Target: target{ID: "c", Context: "cluster"}, Nodes: []nodeInfo{{Name: "node-c", Capacity: qtys{gpu: resource.MustParse("8")}}}},
 		"d": {Target: target{ID: "d", Context: "clusterD"}, Nodes: []nodeInfo{{Name: "node-d", Capacity: qtys{gpu: resource.MustParse("8")}}}},
 	}}
 	m.selected = map[string]bool{"c": true, "d": true}
-	m.scope = []string{"c"} // drilled into the cluster that lacks the resource
+	m.scope = []string{"c"}
 	u, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("b")})
 	mm := u.(model)
-	if !mm.nodeBalance || len(mm.scope) != 1 {
-		t.Fatalf("b should toggle nodes view but keep drill scope: nodeBalance=%v scope=%v", mm.nodeBalance, mm.scope)
+	if !mm.nodeBalance || len(mm.nodeRows()) != 1 || mm.nodeRows()[0].nodeName != "node-c" {
+		t.Fatalf("b should show only drilled context nodes: %#v", mm.nodeRows())
 	}
-	if !strings.Contains(mm.View(), "node-d") {
-		t.Fatalf("nodes did not appear immediately after b (scope still hides them)")
+}
+
+func TestDrillSelectsRowResourceBeforeOpeningNodes(t *testing.T) {
+	gpu, npu := corev1.ResourceName("example.com/gpu"), corev1.ResourceName("example.com/npu")
+	m := model{resource: corev1.ResourceCPU, resourceSelected: map[corev1.ResourceName]bool{gpu: true, npu: true}, snaps: map[string]snapshot{
+		"c": {Target: target{ID: "c"}, Pods: []pod{{Requests: qtys{gpu: resource.MustParse("1"), npu: resource.MustParse("1")}}}},
+	}}
+	u, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = u.(model)
+	if m.resource != gpu || len(m.scope) != 1 || m.scope[0] != "c" {
+		t.Fatalf("drill=%#v resource=%s", m.scope, m.resource)
+	}
+}
+
+func TestNodeViewScopeModes(t *testing.T) {
+	gpu, npu := corev1.ResourceName("example.com/gpu"), corev1.ResourceName("example.com/npu")
+	m := model{resource: gpu, scope: []string{"a"}, selected: map[string]bool{"a": true, "b": true}, resourceSelected: map[corev1.ResourceName]bool{gpu: true, npu: true}, snaps: map[string]snapshot{
+		"a": {Target: target{ID: "a", Context: "a"}, Nodes: []nodeInfo{{Name: "node-a", Capacity: qtys{gpu: resource.MustParse("8"), npu: resource.MustParse("4")}}}},
+		"b": {Target: target{ID: "b", Context: "b"}, Nodes: []nodeInfo{{Name: "node-b", Capacity: qtys{gpu: resource.MustParse("8"), npu: resource.MustParse("4")}}}},
+	}}
+	if rows := m.nodeRows(); len(rows) != 1 || rows[0].nodeName != "node-a" || rows[0].resource != gpu {
+		t.Fatalf("drill rows=%#v", rows)
+	}
+	m.nodeScope = nodeScopeAll
+	if rows := m.nodeRows(); len(rows) != 4 {
+		t.Fatalf("all rows=%#v", rows)
+	}
+	m.nodeScope = nodeScopeContexts
+	if rows := m.nodeRows(); len(rows) != 2 || rows[0].resource != gpu || rows[1].resource != gpu {
+		t.Fatalf("context rows=%#v", rows)
+	}
+	m.nodeScope = nodeScopeResources
+	if rows := m.nodeRows(); len(rows) != 4 {
+		t.Fatalf("resource rows=%#v", rows)
 	}
 }
 

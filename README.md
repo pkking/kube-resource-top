@@ -15,7 +15,7 @@ On first launch, select contexts with `Space` and press `Enter`. It persists the
 
 - `Enter` / `Backspace`: drill down or up (cluster → namespace → workload → Pod)
 - `1`, `2`, `3`/`Tab`: CPU, memory, or cycle discovered resources; `m` opens multi-resource selection
-- `b`: toggle per-node view: allocatable, requested, pending, and remaining capacity for the active resource, with a per-pod breakdown (running on the Node plus cluster-wide pending demand); entering the view picks the first selected resource and `3`/`Tab` cycles through the selected resources (use `m` to add more); `Esc` leaves the per-node view; `c`: reselect monitored contexts; `s` / `S`: cycle/reverse sort; `q`: quit
+- `b`: toggle per-node view. It opens on the current drill-down context and resource; `v` cycles drill → all nodes/resources → selected contexts → selected resource types. `m` and `c` retain their multi-selections for the latter two scopes. The table shows allocatable, requested, pending, and remaining capacity with a per-pod breakdown; `3`/`Tab` cycles selected resources and `Esc` leaves the view; `s` / `S`: cycle/reverse sort; `q`: quit
 
 `-t` reports every unusable file/context and exits with status 1; it checks kubeconfig parsing, authentication, and Kubernetes API discovery.
 
