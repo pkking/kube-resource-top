@@ -6,6 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 func TestEditorAliasRuleParsesDirectConditions(t *testing.T) {
@@ -62,6 +63,37 @@ func TestNewAliasSelectsObservedLabels(t *testing.T) {
 	m = updated.(model)
 	if m.aliasFields[2] != "model=910C" || m.aliasPicking != 2 {
 		t.Fatalf("expected selected labels: %#v", m)
+	}
+}
+
+func TestNewAliasMetadataIsScopedToSelectedResourceNodes(t *testing.T) {
+	cpu, gpu := corev1.ResourceCPU, corev1.ResourceName("example.com/gpu")
+	m := model{
+		aliasCreating:  true,
+		aliasEditIndex: -1,
+		aliasFields:    [5]string{"", string(gpu)},
+		snaps: map[string]snapshot{"c": {Nodes: []nodeInfo{
+			{Labels: map[string]string{"shared": "yes", "gpu-model": "A100"}, Annotations: map[string]string{"gpu-pool": "fast"}, Capacity: qtys{gpu: resource.MustParse("2")}},
+			{Labels: map[string]string{"shared": "yes", "cpu-only": "true"}, Annotations: map[string]string{"cpu-pool": "general"}, Capacity: qtys{cpu: resource.MustParse("8")}},
+		}}},
+	}
+	labels := m.aliasOptions(false)
+	annotations := m.aliasOptions(true)
+	if len(labels) != 2 || labels[0] != (aliasOption{"gpu-model", "A100"}) || labels[1] != (aliasOption{"shared", "yes"}) {
+		t.Fatalf("labels = %#v, want metadata from GPU nodes only", labels)
+	}
+	if len(annotations) != 1 || annotations[0] != (aliasOption{"gpu-pool", "fast"}) {
+		t.Fatalf("annotations = %#v, want metadata from GPU nodes only", annotations)
+	}
+
+	m.aliasFields[1] = string(cpu)
+	if labels = m.aliasOptions(false); len(labels) != 2 || labels[0] != (aliasOption{"cpu-only", "true"}) || labels[1] != (aliasOption{"shared", "yes"}) {
+		t.Fatalf("labels after resource change = %#v, want metadata from CPU nodes only", labels)
+	}
+
+	m.aliasFields[1] = "example.com/missing"
+	if labels = m.aliasOptions(false); len(labels) != 0 {
+		t.Fatalf("labels for unavailable resource = %#v, want none", labels)
 	}
 }
 

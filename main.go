@@ -671,8 +671,13 @@ type aliasOption struct{ key, value string }
 func (m model) aliasOptions(annotations bool) []aliasOption {
 	seen := map[string]bool{}
 	var out []aliasOption
+	resourceName := corev1.ResourceName(m.aliasFields[1])
 	for _, snapshot := range m.snaps {
 		for _, node := range snapshot.Nodes {
+			capacity := node.Capacity[resourceName]
+			if m.aliasCreating && m.aliasEditIndex < 0 && resourceName != "" && capacity.IsZero() {
+				continue
+			}
 			values := node.Labels
 			if annotations {
 				values = node.Annotations
