@@ -104,6 +104,8 @@ type model struct {
 	aliasEditIndex                                      int
 	aliasFields                                         [5]string
 	aliasConditions                                     map[string]bool
+	aliasSearch                                         string
+	aliasSearching                                      bool
 	aliasError                                          string
 }
 
@@ -694,8 +696,23 @@ func (m model) aliasOptions(annotations bool) []aliasOption {
 	sort.Slice(out, func(i, j int) bool { return out[i].key+"\x00"+out[i].value < out[j].key+"\x00"+out[j].value })
 	return out
 }
+func (m model) filteredAliasOptions(annotations bool) []aliasOption {
+	options := m.aliasOptions(annotations)
+	query := strings.ToLower(m.aliasSearch)
+	if query == "" {
+		return options
+	}
+	filtered := options[:0]
+	for _, option := range options {
+		if strings.Contains(strings.ToLower(option.key+"="+option.value), query) {
+			filtered = append(filtered, option)
+		}
+	}
+	return filtered
+}
 func (m *model) pickAliasOptions(picking, returnField int) {
 	m.aliasPicking, m.aliasPickerReturnField, m.aliasCursor = picking, returnField, 0
+	m.aliasSearch, m.aliasSearching = "", false
 	m.aliasConditions = map[string]bool{}
 	field := 2
 	if picking == 2 {
@@ -806,8 +823,30 @@ func (m *model) updateAlias(k string) (tea.Model, tea.Cmd) {
 	}
 	if m.aliasPicking > 0 {
 		annotations := m.aliasPicking == 2
-		options := m.aliasOptions(annotations)
+		options := m.filteredAliasOptions(annotations)
+		if m.aliasSearching {
+			switch k {
+			case "esc":
+				m.aliasSearch, m.aliasSearching, m.aliasCursor = "", false, 0
+			case "enter":
+				m.aliasSearching = false
+			case "backspace":
+				runes := []rune(m.aliasSearch)
+				if len(runes) > 0 {
+					m.aliasSearch = string(runes[:len(runes)-1])
+					m.aliasCursor = 0
+				}
+			default:
+				if len([]rune(k)) == 1 {
+					m.aliasSearch += k
+					m.aliasCursor = 0
+				}
+			}
+			return *m, nil
+		}
 		switch k {
+		case "/":
+			m.aliasSearching = true
 		case "esc":
 			m.aliasPicking = 0
 			if m.aliasPickerReturnField >= 0 {
@@ -1495,9 +1534,12 @@ func (m model) aliasView() string {
 			title = "Select annotations"
 		}
 		b.WriteString("Create node resource alias — " + title + "\n\n")
-		options := m.aliasOptions(annotations)
+		options := m.filteredAliasOptions(annotations)
+		if m.aliasSearching {
+			b.WriteString("Search: " + m.aliasSearch + "█\n\n")
+		}
 		if len(options) == 0 {
-			b.WriteString("Waiting for watched node metadata…\n")
+			b.WriteString("No matching watched node metadata.\n")
 		}
 		start := m.aliasCursor / m.pageSize() * m.pageSize()
 		end := min(start+m.pageSize(), len(options))
@@ -1512,7 +1554,11 @@ func (m model) aliasView() string {
 			}
 			b.WriteString(line + "\n")
 		}
-		b.WriteString(fmt.Sprintf("\nrows %d-%d/%d  ↑↓ move  PgUp/PgDn page  Space toggle  Enter continue  Esc back", start+1, end, len(options)))
+		hint := "↑↓ move  PgUp/PgDn page  Space toggle  / search  Enter continue  Esc back"
+		if m.aliasSearching {
+			hint = "type search  Backspace delete  Enter filter  Esc clear"
+		}
+		b.WriteString(fmt.Sprintf("\nrows %d-%d/%d  %s", start+1, end, len(options), hint))
 		return b.String()
 	}
 	if !m.aliasEditing {

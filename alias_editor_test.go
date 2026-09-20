@@ -97,6 +97,60 @@ func TestNewAliasMetadataIsScopedToSelectedResourceNodes(t *testing.T) {
 	}
 }
 
+func TestAliasMetadataPickerSearch(t *testing.T) {
+	m := model{
+		aliasPicking:    1,
+		aliasConditions: map[string]bool{},
+		snaps: map[string]snapshot{"c": {Nodes: []nodeInfo{{
+			Labels:      map[string]string{"gpu-model": "A100", "zone": "west"},
+			Annotations: map[string]string{"gpu-pool": "fast"},
+		}}}},
+	}
+	updated, _ := m.updateAlias("/")
+	m = updated.(model)
+	for _, key := range "gpu" {
+		updated, _ = m.updateAlias(string(key))
+		m = updated.(model)
+	}
+	if !m.aliasSearching || m.aliasSearch != "gpu" || len(m.filteredAliasOptions(false)) != 1 {
+		t.Fatalf("search state = %#v, options = %#v", m, m.filteredAliasOptions(false))
+	}
+	updated, _ = m.updateAlias("enter")
+	m = updated.(model)
+	updated, _ = m.updateAlias(" ")
+	m = updated.(model)
+	if !m.aliasConditions["gpu-model\x00A100"] {
+		t.Fatalf("filtered option was not selected: %#v", m.aliasConditions)
+	}
+	updated, _ = m.updateAlias("/")
+	m = updated.(model)
+	updated, _ = m.updateAlias("backspace")
+	m = updated.(model)
+	if m.aliasSearch != "gp" {
+		t.Fatalf("search after backspace = %q", m.aliasSearch)
+	}
+	updated, _ = m.updateAlias("esc")
+	m = updated.(model)
+	if m.aliasSearching || m.aliasSearch != "" || len(m.filteredAliasOptions(false)) != 2 {
+		t.Fatalf("search was not cleared: %#v", m)
+	}
+	m.aliasPicking = 2
+	updated, _ = m.updateAlias("/")
+	m = updated.(model)
+	for _, key := range "pool" {
+		updated, _ = m.updateAlias(string(key))
+		m = updated.(model)
+	}
+	if len(m.filteredAliasOptions(true)) != 1 {
+		t.Fatalf("annotation search options = %#v", m.filteredAliasOptions(true))
+	}
+	updated, _ = m.updateAlias("z")
+	m = updated.(model)
+	if len(m.filteredAliasOptions(true)) != 0 {
+		t.Fatalf("no-match annotation search options = %#v", m.filteredAliasOptions(true))
+	}
+}
+
 func TestEditingAliasReopensSelectedLabels(t *testing.T) {
 	m := model{aliasEditing: true, aliasField: 2, aliasFields: [5]string{"atlas", "gpu", "model=910C", "", "1"}, snaps: map[string]snapshot{"c": {Nodes: []nodeInfo{{Labels: map[string]string{"model": "910C"}}}}}}
 	updated, _ := m.updateAlias("enter")
