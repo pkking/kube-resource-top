@@ -89,7 +89,7 @@ func (s *watchState) setPod(p *corev1.Pod) {
 	if p.Status.Phase == corev1.PodPending {
 		requests = pendingNPURequests(requests, p.Labels)
 	}
-	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Workload: ownerForPod(p.Namespace, p.Name, p.OwnerReferences, nil), Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations}
+	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Workload: ownerForPod(p.Namespace, p.Name, p.OwnerReferences, nil), Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, CreatedAt: p.CreationTimestamp.Time}
 }
 func pendingNPURequests(requests qtys, labels map[string]string) qtys {
 	model := labels["ascend-ci.com/npu-resource-model"]

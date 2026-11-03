@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	corev1 "k8s.io/api/core/v1"
@@ -210,5 +211,46 @@ func TestContextAndPodViewsExcludeOffloadedPods(t *testing.T) {
 	prows := drill.rows()
 	if len(prows) != 2 {
 		t.Fatalf("pod rows=%d, want 2 (offloaded excluded)", len(prows))
+	}
+}
+
+// ageSuffixOnScopeHeader reports whether the header line (the line containing
+// "SCOPE") ends with the AGE column, and fails the test if no header is found.
+func ageSuffixOnScopeHeader(t *testing.T, out string) bool {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "SCOPE") {
+			return strings.HasSuffix(strings.TrimRight(line, " "), "AGE")
+		}
+	}
+	t.Fatal("no header line containing SCOPE")
+	return false
+}
+
+func TestPodDrillDownShowsAgeColumn(t *testing.T) {
+	cpu := corev1.ResourceCPU
+	m := model{resource: cpu, resourceSelected: map[corev1.ResourceName]bool{cpu: true}, selected: map[string]bool{"t": true}, scope: []string{"t", "ns", "Deployment/app"}, width: 140, height: 40, snaps: map[string]snapshot{"t": {Target: target{ID: "t"}, Capacity: qtys{cpu: resource.MustParse("10")}, Pods: []pod{
+		{Namespace: "ns", Name: "pod-a", Workload: "Deployment/app", Phase: corev1.PodRunning, NodeName: "node-1", Requests: qtys{cpu: resource.MustParse("1")}, CreatedAt: time.Now().Add(-70 * time.Minute)},
+		{Namespace: "ns", Name: "pod-b", Workload: "Deployment/app", Phase: corev1.PodRunning, NodeName: "node-1", Requests: qtys{cpu: resource.MustParse("1")}},
+	}}}}
+	out := m.View()
+	if !ageSuffixOnScopeHeader(t, out) {
+		t.Fatalf("pod detail header should end with AGE:\n%s", out)
+	}
+	// aggregate views (v cycles viewMode, scope stays set) must not show AGE
+	agg := m
+	agg.viewMode = 1
+	if ageSuffixOnScopeHeader(t, agg.View()) {
+		t.Fatalf("clusters aggregate header must not end with AGE:\n%s", agg.View())
+	}
+	agg.viewMode = 2
+	if ageSuffixOnScopeHeader(t, agg.View()) {
+		t.Fatalf("resources aggregate header must not end with AGE:\n%s", agg.View())
+	}
+	if !strings.Contains(out, "70m") {
+		t.Fatalf("pod view missing 70m age:\n%s", out)
+	}
+	if !strings.Contains(out, "N/A") {
+		t.Fatalf("zero CreatedAt pod should render N/A:\n%s", out)
 	}
 }

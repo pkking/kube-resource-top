@@ -20,7 +20,7 @@ func listPods(ctx context.Context, k kubernetes.Interface) ([]pod, error) {
 			if p.Status.Phase != corev1.PodPending && p.Status.Phase != corev1.PodRunning {
 				continue
 			}
-			out = append(out, pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), OwnerRefs: p.OwnerReferences, Requests: podQuantities(p, false), Limits: podQuantities(p, true)})
+			out = append(out, pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), OwnerRefs: p.OwnerReferences, Requests: podQuantities(p, false), Limits: podQuantities(p, true), CreatedAt: p.CreationTimestamp.Time})
 		}
 		token = list.Continue
 		if token == "" {

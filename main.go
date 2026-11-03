@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -62,6 +63,7 @@ type pod struct {
 	OwnerRefs                                []metav1.OwnerReference
 	Requests, Limits, Usage                  qtys
 	Annotations                              map[string]string
+	CreatedAt                                time.Time
 }
 type qtys map[corev1.ResourceName]resource.Quantity
 
@@ -1103,6 +1105,7 @@ type row struct {
 	running, pending resource.Quantity
 	usageOK, capOK   bool
 	status           string
+	createdAt        time.Time
 }
 type displayRow struct {
 	row
@@ -1253,6 +1256,9 @@ func (m model) rows() []row {
 					name = filepath.Base(s.Target.Path) + " :: " + display(s.Target.Context)
 				}
 				r = &row{key: key, name: name, usageOK: true, capOK: level == 0}
+				if level == 3 {
+					r.createdAt = p.CreatedAt
+				}
 				grouped[key] = r
 			}
 			r.q.Add(p.Requests[m.resource])
@@ -1423,23 +1429,45 @@ func (m model) View() string {
 	b.WriteString(header)
 	b.WriteString(m.aggregateView())
 	visible, start, end := m.visibleRows()
-	nameW := m.nameWidth(scopeNames(visible), 98, 12)
-	if m.width >= 120 {
-		b.WriteString("\n" + tableLine("  ", []int{nameW, 22, 21, 10, 12, 12}, "SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%", "RUNNING REQ", "PENDING REQ", "REQUEST / ALLOCATABLE") + "\n")
-	} else if m.width >= 85 {
-		b.WriteString("\n" + tableLine("  ", []int{nameW, 22, 21, 10}, "SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%", "REQUEST / ALLOCATABLE") + "\n")
-	} else {
-		b.WriteString("\n" + tableLine("  ", []int{nameW, 16, 21}, "SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%") + "\n")
+	podLevel := m.viewMode == 0 && len(m.scope) == 3
+	reserved := 98
+	if podLevel {
+		reserved = 107
 	}
+	nameW := m.nameWidth(scopeNames(visible), reserved, 12)
+	var widths []int
+	var cells []string
+	if m.width >= 120 {
+		widths = []int{nameW, 22, 21, 10, 12, 12}
+		cells = []string{"SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%", "RUNNING REQ", "PENDING REQ", "REQUEST / ALLOCATABLE"}
+	} else if m.width >= 85 {
+		widths = []int{nameW, 22, 21, 10}
+		cells = []string{"SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%", "REQUEST / ALLOCATABLE"}
+	} else {
+		widths = []int{nameW, 16, 21}
+		cells = []string{"SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%"}
+	}
+	if podLevel {
+		widths = append(widths, 6)
+		cells = append(cells, "AGE")
+	}
+	b.WriteString("\n" + tableLine("  ", widths, cells...) + "\n")
 	for i, r := range visible {
-		var line string
 		if m.width >= 120 {
-			line = tableLine("> ", []int{nameW, 22, 21, 10, 12, 12}, fit(r.name, nameW), trim(string(r.resource), 22), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK), render(r.running), render(r.pending), capacityPair(r.q, r.c, r.capOK))
+			widths = []int{nameW, 22, 21, 10, 12, 12}
+			cells = []string{fit(r.name, nameW), trim(string(r.resource), 22), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK), render(r.running), render(r.pending), capacityPair(r.q, r.c, r.capOK)}
 		} else if m.width >= 85 {
-			line = tableLine("> ", []int{nameW, 22, 21, 10}, fit(r.name, nameW), trim(string(r.resource), 22), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK), capacityPair(r.q, r.c, r.capOK))
+			widths = []int{nameW, 22, 21, 10}
+			cells = []string{fit(r.name, nameW), trim(string(r.resource), 22), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK), capacityPair(r.q, r.c, r.capOK)}
 		} else {
-			line = tableLine("> ", []int{nameW, 16, 21}, fit(r.name, nameW), trim(string(r.resource), 16), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK))
+			widths = []int{nameW, 16, 21}
+			cells = []string{fit(r.name, nameW), trim(string(r.resource), 16), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK)}
 		}
+		if podLevel {
+			widths = append(widths, 6)
+			cells = append(cells, ageCell(r.createdAt))
+		}
+		line := tableLine("> ", widths, cells...)
 		if start+i == m.cursor {
 			line = selectedStyle.Render(line)
 		}
@@ -1759,6 +1787,16 @@ func capacityPair(a, b resource.Quantity, ok bool) string {
 		return gray.Render("N/A")
 	}
 	return render(a) + " / " + render(b)
+}
+func ageCell(createdAt time.Time) string {
+	if createdAt.IsZero() {
+		return gray.Render("N/A")
+	}
+	d := time.Since(createdAt)
+	if d < 0 {
+		d = 0
+	}
+	return duration.HumanDuration(d)
 }
 func render(q resource.Quantity) string {
 	if q.Format == resource.DecimalSI && q.AsApproximateFloat64() < 1 && !q.IsZero() {
