@@ -254,3 +254,36 @@ func TestPodDrillDownShowsAgeColumn(t *testing.T) {
 		t.Fatalf("zero CreatedAt pod should render N/A:\n%s", out)
 	}
 }
+
+func TestWorkloadDrillDownShowsOldestPodAge(t *testing.T) {
+	cpu := corev1.ResourceCPU
+	m := model{resource: cpu, resourceSelected: map[corev1.ResourceName]bool{cpu: true}, selected: map[string]bool{"t": true}, scope: []string{"t", "ns"}, width: 140, height: 40, snaps: map[string]snapshot{"t": {Target: target{ID: "t"}, Capacity: qtys{cpu: resource.MustParse("10")}, Pods: []pod{
+		{Namespace: "ns", Workload: "Deployment/app", Phase: corev1.PodRunning, NodeName: "node-1", Requests: qtys{cpu: resource.MustParse("1")}, CreatedAt: time.Now().Add(-3 * time.Hour)},
+		{Namespace: "ns", Workload: "Deployment/app", Phase: corev1.PodRunning, NodeName: "node-1", Requests: qtys{cpu: resource.MustParse("1")}, CreatedAt: time.Now().Add(-30 * time.Minute)},
+		{Namespace: "ns", Workload: "Job/other", Phase: corev1.PodRunning, NodeName: "node-1", Requests: qtys{cpu: resource.MustParse("1")}},
+	}}}}
+	out := m.View()
+	if !ageSuffixOnScopeHeader(t, out) {
+		t.Fatalf("workload detail header should end with AGE:\n%s", out)
+	}
+	if !strings.Contains(out, "3h") {
+		t.Fatalf("workload row should show oldest pod age 3h:\n%s", out)
+	}
+	if !strings.Contains(out, "N/A") {
+		t.Fatalf("workload with unknown pod timestamps should render N/A:\n%s", out)
+	}
+	if strings.Contains(out, "30m") {
+		t.Fatalf("younger pod age must not be shown (oldest pod wins):\n%s", out)
+	}
+	// shallower scopes must not show AGE
+	cluster := m
+	cluster.scope = nil
+	if ageSuffixOnScopeHeader(t, cluster.View()) {
+		t.Fatalf("cluster scope header must not end with AGE:\n%s", cluster.View())
+	}
+	nsScope := m
+	nsScope.scope = []string{"t"}
+	if ageSuffixOnScopeHeader(t, nsScope.View()) {
+		t.Fatalf("namespace scope header must not end with AGE:\n%s", nsScope.View())
+	}
+}

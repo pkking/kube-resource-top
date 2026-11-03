@@ -1256,10 +1256,14 @@ func (m model) rows() []row {
 					name = filepath.Base(s.Target.Path) + " :: " + display(s.Target.Context)
 				}
 				r = &row{key: key, name: name, usageOK: true, capOK: level == 0}
-				if level == 3 {
-					r.createdAt = p.CreatedAt
-				}
 				grouped[key] = r
+			}
+			// Workload rows age from the earliest-created current pod (oldest pod);
+			// pod rows carry their own creation. Unknown timestamps never win the minimum.
+			if level == 3 {
+				r.createdAt = p.CreatedAt
+			} else if level == 2 && !p.CreatedAt.IsZero() && (r.createdAt.IsZero() || p.CreatedAt.Before(r.createdAt)) {
+				r.createdAt = p.CreatedAt
 			}
 			r.q.Add(p.Requests[m.resource])
 			if p.Phase == corev1.PodPending {
@@ -1429,9 +1433,9 @@ func (m model) View() string {
 	b.WriteString(header)
 	b.WriteString(m.aggregateView())
 	visible, start, end := m.visibleRows()
-	podLevel := m.viewMode == 0 && len(m.scope) == 3
+	showAge := m.viewMode == 0 && len(m.scope) >= 2
 	reserved := 98
-	if podLevel {
+	if showAge {
 		reserved = 107
 	}
 	nameW := m.nameWidth(scopeNames(visible), reserved, 12)
@@ -1447,7 +1451,7 @@ func (m model) View() string {
 		widths = []int{nameW, 16, 21}
 		cells = []string{"SCOPE", "RESOURCE", "USAGE / REQUEST", "USE%"}
 	}
-	if podLevel {
+	if showAge {
 		widths = append(widths, 6)
 		cells = append(cells, "AGE")
 	}
@@ -1463,7 +1467,7 @@ func (m model) View() string {
 			widths = []int{nameW, 16, 21}
 			cells = []string{fit(r.name, nameW), trim(string(r.resource), 16), pair(r.u, r.q, r.usageOK), ratio(r.u, r.q, r.usageOK)}
 		}
-		if podLevel {
+		if showAge {
 			widths = append(widths, 6)
 			cells = append(cells, ageCell(r.createdAt))
 		}

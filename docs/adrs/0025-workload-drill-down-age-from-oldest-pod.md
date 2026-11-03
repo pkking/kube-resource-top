@@ -1,0 +1,5 @@
+# Workload drill-down AGE from oldest pod
+
+The detail-view AGE column of ADR 0024 now appears at the workload scope depth (`len(scope) == 2`) as well as the pod depth. A workload row's AGE is the earliest creationTimestamp among the workload's current pods: the oldest pod approximates when the workload's running generation began, and for single-pod workloads (Argo Workflow pods, Jobs, the `Pod/<name>` attribution of ADR 0020) it is exactly that pod's age. Only Pods are watched (ADR 0001), so there are no workload objects to read timestamps from. Zero (unknown) timestamps never win the minimum; a workload whose current pods all have unknown timestamps renders gray `N/A`.
+
+The newest pod's age was rejected because one restarted or replaced pod would make a long-running workload look brand-new, and workload-object timestamps were rejected because they would require watching additional resource types. As in ADR 0024, the age is computed at render time and remains display-only: it never participates in aggregation, accounting, or sorting.
