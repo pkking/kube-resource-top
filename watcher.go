@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -14,58 +15,76 @@ import (
 )
 
 // watchTarget relies on client-go informers: an initial List establishes state,
-// then the Kubernetes Watch stream keeps it current. There is no refresh timer.
+// then the Kubernetes Watch stream keeps it current. No timer refreshes state;
+// the TUI's display-only tick (ADR 0027) just re-renders.
 func watchTarget(ctx context.Context, t target, aliases []aliasRule, updates chan<- resultMsg) {
 	rc, err := restConfig(t)
 	if err != nil {
-		sendSnapshot(updates, snapshot{Target: t, Err: err.Error()})
+		sendSnapshot(ctx, updates, snapshot{Target: t, Err: err.Error()})
 		return
 	}
 	client, err := kubernetes.NewForConfig(rc)
 	if err != nil {
-		sendSnapshot(updates, snapshot{Target: t, Err: err.Error()})
+		sendSnapshot(ctx, updates, snapshot{Target: t, Err: err.Error()})
 		return
 	}
 	state := &watchState{target: t, aliases: aliases, pods: map[string]pod{}, nodes: map[string]corev1.Node{}}
 	factory := informers.NewSharedInformerFactory(client, 0)
 	pods := factory.Core().V1().Pods().Informer()
 	nodes := factory.Core().V1().Nodes().Informer()
-	update := func() { sendSnapshot(updates, state.snapshot()) }
+	dirty := make(chan struct{}, 1)
+	notify := func() {
+		select {
+		case dirty <- struct{}{}:
+		default:
+		}
+	}
 	pods.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(v interface{}) {
 			if p, ok := v.(*corev1.Pod); ok {
 				state.setPod(p)
-				update()
+				notify()
 			}
 		},
 		UpdateFunc: func(_, v interface{}) {
 			if p, ok := v.(*corev1.Pod); ok {
 				state.setPod(p)
-				update()
+				notify()
 			}
 		},
-		DeleteFunc: func(v interface{}) { state.deletePod(v); update() },
+		DeleteFunc: func(v interface{}) { state.deletePod(v); notify() },
 	})
 	nodes.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(v interface{}) {
 			if n, ok := v.(*corev1.Node); ok {
 				state.setNode(n)
-				update()
+				notify()
 			}
 		},
 		UpdateFunc: func(_, v interface{}) {
 			if n, ok := v.(*corev1.Node); ok {
 				state.setNode(n)
-				update()
+				notify()
 			}
 		},
-		DeleteFunc: func(v interface{}) { state.deleteNode(v); update() },
+		DeleteFunc: func(v interface{}) { state.deleteNode(v); notify() },
 	})
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-dirty:
+			}
+			time.Sleep(50 * time.Millisecond) // coalesce event bursts into one snapshot
+			sendSnapshot(ctx, updates, state.snapshot())
+		}
+	}()
 	factory.Start(ctx.Done())
 	if !cache.WaitForCacheSync(ctx.Done(), pods.HasSynced, nodes.HasSynced) {
 		return
 	}
-	update()
+	notify()
 	<-ctx.Done()
 }
 
@@ -111,6 +130,9 @@ func pendingNPURequests(requests qtys, labels map[string]string) qtys {
 func (s *watchState) deletePod(v interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if d, ok := v.(cache.DeletedFinalStateUnknown); ok {
+		v = d.Obj
+	}
 	if p, ok := v.(*corev1.Pod); ok {
 		delete(s.pods, p.Namespace+"/"+p.Name)
 	}
@@ -119,6 +141,9 @@ func (s *watchState) setNode(n *corev1.Node) { s.mu.Lock(); defer s.mu.Unlock();
 func (s *watchState) deleteNode(v interface{}) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if d, ok := v.(cache.DeletedFinalStateUnknown); ok {
+		v = d.Obj
+	}
 	if n, ok := v.(*corev1.Node); ok {
 		delete(s.nodes, n.Name)
 	}
@@ -257,9 +282,9 @@ func matchesAlias(rule aliasRule, node corev1.Node) bool {
 	}
 	return true
 }
-func sendSnapshot(ch chan<- resultMsg, s snapshot) {
+func sendSnapshot(ctx context.Context, ch chan<- resultMsg, s snapshot) {
 	select {
 	case ch <- resultMsg{s: s}:
-	default:
+	case <-ctx.Done():
 	}
 }

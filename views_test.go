@@ -287,3 +287,14 @@ func TestWorkloadDrillDownShowsOldestPodAge(t *testing.T) {
 		t.Fatalf("namespace scope header must not end with AGE:\n%s", nsScope.View())
 	}
 }
+
+func TestRefreshTickRearms(t *testing.T) {
+	m := model{}
+	u, cmd := m.Update(refreshMsg{})
+	if cmd == nil {
+		t.Fatal("refresh tick must re-arm")
+	}
+	if _, ok := u.(model); !ok {
+		t.Fatalf("Update returned %T", u)
+	}
+}

@@ -459,7 +459,10 @@ func (m model) startWatchers() tea.Cmd {
 			go watchTarget(m.watchCtx, t, m.aliases, m.updates)
 		}
 	}
-	return m.waitUpdate()
+	return tea.Batch(m.waitUpdate(), tickCmd())
+}
+func tickCmd() tea.Cmd {
+	return tea.Tick(30*time.Second, func(time.Time) tea.Msg { return refreshMsg{} })
 }
 func (m model) waitUpdate() tea.Cmd { return func() tea.Msg { return <-m.updates } }
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -666,6 +669,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case resultMsg:
 		m.snaps[x.s.Target.ID] = x.s
 		return m, m.waitUpdate()
+	case refreshMsg:
+		// Display-only re-render (ADR 0027): no state is touched; View
+		// re-renders automatically after Update.
+		return m, tickCmd()
 	}
 	return m, nil
 }

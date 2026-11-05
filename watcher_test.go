@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/cache"
 )
 
 func TestPendingRequestUsesOnlyClusterAlias(t *testing.T) {
@@ -107,5 +110,34 @@ func TestSnapshotMarksLiqoAnnotatedUnscheduledPodsAsOffloaded(t *testing.T) {
 	}
 	if local.Offloaded {
 		t.Fatal("local pod should not be offloaded")
+	}
+}
+
+func TestDeleteHandlesTombstones(t *testing.T) {
+	s := &watchState{pods: map[string]pod{"ns/done": {Namespace: "ns", Name: "done", Phase: corev1.PodRunning}}, nodes: map[string]corev1.Node{"node-a": {ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}}}
+	s.deletePod(cache.DeletedFinalStateUnknown{Key: "ns/done", Obj: &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "done"}}})
+	s.deleteNode(cache.DeletedFinalStateUnknown{Key: "node-a", Obj: &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}}})
+	if len(s.pods) != 0 || len(s.nodes) != 0 {
+		t.Fatalf("tombstone delete ignored: pods=%d nodes=%d", len(s.pods), len(s.nodes))
+	}
+}
+
+func TestSendSnapshotDeliversOrAbortsOnCancel(t *testing.T) {
+	ch := make(chan resultMsg, 1)
+	sendSnapshot(context.Background(), ch, snapshot{Target: target{ID: "c"}})
+	if got := <-ch; got.s.Target.ID != "c" {
+		t.Fatalf("snapshot not delivered: %#v", got)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		sendSnapshot(ctx, make(chan resultMsg), snapshot{})
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sendSnapshot must abort on canceled context, blocked instead")
 	}
 }
