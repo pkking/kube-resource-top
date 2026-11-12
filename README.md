@@ -17,7 +17,7 @@ On first launch, select contexts with `Space` and press `Enter`. It persists the
 - `1`, `2`, `3`/`Tab`: CPU, memory, or cycle discovered resources; `m` opens multi-resource selection
 - `b`: toggle per-node view. It opens on the current drill-down context and resource; `v` cycles drill → all nodes/resources → selected contexts → selected resource types. `m` and `c` retain their multi-selections for the latter two scopes. The table shows allocatable, requested, pending, and remaining capacity with a per-pod breakdown; `3`/`Tab` cycles selected resources and `Esc` leaves the view; `s` / `S`: cycle/reverse sort; `q`: quit
 
-The ALL CONTEXTS summary at the top of every view lists each selected resource's usage/request, running and pending requests, total node capacity, allocatable, and the request/allocatable ratio.
+The ALL CONTEXTS summary at the top of every view lists each selected resource's total node capacity, request/allocatable ratio, running and pending requests, and allocatable.
 
 `-t` reports every unusable file/context and exits with status 1; it checks kubeconfig parsing, authentication, and Kubernetes API discovery.
 

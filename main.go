@@ -1518,18 +1518,16 @@ func (m model) aggregateView() string {
 		all := m
 		all.scope = nil
 		all.resource = resource
-		total := row{usageOK: true, capOK: true}
+		total := row{capOK: true}
 		for _, r := range all.rows() {
 			total.q.Add(r.q)
-			total.u.Add(r.u)
 			total.running.Add(r.running)
 			total.pending.Add(r.pending)
 			total.c.Add(r.c)
 			total.t.Add(r.t)
-			total.usageOK = total.usageOK && r.usageOK
 			total.capOK = total.capOK && r.capOK
 		}
-		b.WriteString(fmt.Sprintf("  %-22s %s  running %s  pending %s  total %s  allocatable %s  req/alloc %s\n", trim(string(resource), 22), pair(total.u, total.q, total.usageOK), render(total.running), render(total.pending), render(total.t), render(total.c), ratio(total.q, total.c, total.capOK)))
+		b.WriteString(fmt.Sprintf("  %-22s total %s  req/alloc %s  running %s  pending %s  allocatable %s\n", trim(string(resource), 22), render(total.t), ratio(total.q, total.c, total.capOK), render(total.running), render(total.pending), render(total.c)))
 	}
 	return b.String()
 }

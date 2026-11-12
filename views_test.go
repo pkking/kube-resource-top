@@ -64,10 +64,12 @@ func TestAggregateViewShowsTotalAndOccupancy(t *testing.T) {
 		{Namespace: "ns", Name: "pend", Phase: corev1.PodPending, Requests: qtys{gpu: resource.MustParse("1")}},
 	}}}}
 	out := m.aggregateView()
-	for _, want := range []string{"running 3", "pending 1", "total 8", "allocatable 6", "req/alloc 67%"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("aggregate view missing %q:\n%s", want, out)
-		}
+	want := "total 8  req/alloc 67%  running 3  pending 1  allocatable 6"
+	if !strings.Contains(out, want) {
+		t.Fatalf("aggregate view missing %q:\n%s", want, out)
+	}
+	if strings.Contains(out, "N/A") {
+		t.Fatalf("aggregate view must not show the usage pair:\n%s", out)
 	}
 }
 
