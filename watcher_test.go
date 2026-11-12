@@ -21,6 +21,20 @@ func TestPendingRequestUsesOnlyClusterAlias(t *testing.T) {
 	}
 }
 
+func TestSnapshotSumsNodeCapacityTotalWithAliasScaling(t *testing.T) {
+	source, alias := corev1.ResourceName("huawei.com/ascend-1980"), corev1.ResourceName("910C")
+	s := &watchState{aliases: []aliasRule{{Alias: string(alias), Resource: string(source), Labels: map[string]string{"model": "910C"}, Unit: 2}}, pods: map[string]pod{}, nodes: map[string]corev1.Node{"node": {ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"model": "910C"}}, Status: corev1.NodeStatus{Capacity: corev1.ResourceList{source: resource.MustParse("10")}, Allocatable: corev1.ResourceList{source: resource.MustParse("8")}}}}}
+	snap := s.snapshot()
+	total := snap.Total[alias]
+	if got := total.MilliValue(); got != 5000 {
+		t.Fatalf("total=%dm, want 5000m (10 over unit 2)", got)
+	}
+	allocatable := snap.Capacity[alias]
+	if got := allocatable.MilliValue(); got != 4000 {
+		t.Fatalf("allocatable=%dm, want 4000m", got)
+	}
+}
+
 func TestPendingRequestStaysRawForMultipleClusterAliases(t *testing.T) {
 	source := corev1.ResourceName("huawei.com/ascend-1980")
 	s := &watchState{aliases: []aliasRule{{Alias: "910B", Resource: string(source), Labels: map[string]string{"model": "B"}}, {Alias: "910C", Resource: string(source), Labels: map[string]string{"model": "C"}}}, pods: map[string]pod{"n/p": {Namespace: "n", Name: "p", Phase: corev1.PodPending, Requests: qtys{source: resource.MustParse("1")}}}, nodes: map[string]corev1.Node{"b": {ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"model": "B"}}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{source: resource.MustParse("8")}}}, "c": {ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"model": "C"}}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{source: resource.MustParse("8")}}}}}

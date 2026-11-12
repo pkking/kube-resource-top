@@ -151,7 +151,7 @@ func (s *watchState) deleteNode(v interface{}) {
 func (s *watchState) snapshot() snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := snapshot{Target: s.target, Capacity: qtys{}}
+	out := snapshot{Target: s.target, Capacity: qtys{}, Total: qtys{}}
 	pendingAliases := s.singleAliasRules()
 	for _, raw := range s.pods {
 		p := raw
@@ -180,15 +180,22 @@ func (s *watchState) snapshot() snapshot {
 		out.Pods = append(out.Pods, p)
 	}
 	for _, n := range s.nodes {
-		capacity := aliasQuantities(qtys(n.Status.Allocatable), n, s.aliases)
-		out.Nodes = append(out.Nodes, nodeInfo{Name: n.Name, IP: nodeIP(n), Labels: n.Labels, Annotations: n.Annotations, Capacity: capacity})
-		for resource, quantity := range capacity {
-			value := out.Capacity[resource]
-			value.Add(quantity)
-			out.Capacity[resource] = value
-		}
+		allocatable := aliasQuantities(qtys(n.Status.Allocatable), n, s.aliases)
+		total := aliasQuantities(qtys(n.Status.Capacity), n, s.aliases)
+		out.Nodes = append(out.Nodes, nodeInfo{Name: n.Name, IP: nodeIP(n), Labels: n.Labels, Annotations: n.Annotations, Capacity: allocatable})
+		sumInto(out.Capacity, allocatable)
+		sumInto(out.Total, total)
 	}
 	return out
+}
+
+// sumInto accumulates src quantities into dst.
+func sumInto(dst, src qtys) {
+	for resourceName, quantity := range src {
+		value := dst[resourceName]
+		value.Add(quantity)
+		dst[resourceName] = value
+	}
 }
 func nodeIP(node corev1.Node) string {
 	for _, address := range node.Status.Addresses {

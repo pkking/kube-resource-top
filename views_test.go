@@ -57,6 +57,20 @@ func TestResourceAggregateViewGroupsContexts(t *testing.T) {
 	}
 }
 
+func TestAggregateViewShowsTotalAndOccupancy(t *testing.T) {
+	gpu := corev1.ResourceName("example.com/gpu")
+	m := model{resource: gpu, resourceSelected: map[corev1.ResourceName]bool{gpu: true}, snaps: map[string]snapshot{"c": {Target: target{ID: "c", Context: "cluster"}, Total: qtys{gpu: resource.MustParse("8")}, Capacity: qtys{gpu: resource.MustParse("6")}, Pods: []pod{
+		{Namespace: "ns", Name: "run", NodeName: "node-a", Phase: corev1.PodRunning, Requests: qtys{gpu: resource.MustParse("3")}},
+		{Namespace: "ns", Name: "pend", Phase: corev1.PodPending, Requests: qtys{gpu: resource.MustParse("1")}},
+	}}}}
+	out := m.aggregateView()
+	for _, want := range []string{"running 3", "pending 1", "total 8", "allocatable 6", "req/alloc 67%"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("aggregate view missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestNameWidthFitsLongestBoundedByTerminal(t *testing.T) {
 	long := "short-name-here-12345678901234567890" // 36 chars
 	m := model{width: 120}

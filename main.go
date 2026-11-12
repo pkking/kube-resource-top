@@ -40,10 +40,13 @@ type aliasRule struct {
 }
 type target struct{ ID, Path, Context, Server, Probe string }
 type snapshot struct {
-	Target   target
-	Pods     []pod
-	Nodes    []nodeInfo
+	Target target
+	Pods   []pod
+	Nodes  []nodeInfo
+	// Capacity sums node Allocatable (schedulable after system reserves);
+	// Total sums node Capacity (physical). Both are alias-scaled.
 	Capacity qtys
+	Total    qtys
 	Err      string
 	At       time.Time
 	Metrics  string
@@ -1107,8 +1110,9 @@ func (m model) nodePods(targetID, nodeName string, resourceName corev1.ResourceN
 }
 
 type row struct {
-	key, name        string
-	q, u, l, c       resource.Quantity
+	key, name string
+	// q: requests, u: usage, l: limits, c: allocatable, t: total capacity
+	q, u, l, c, t    resource.Quantity
 	running, pending resource.Quantity
 	usageOK, capOK   bool
 	status           string
@@ -1291,6 +1295,7 @@ func (m model) rows() []row {
 			if level == 0 && !capacityAdded[s.Target.ID] {
 				capacityAdded[s.Target.ID] = true
 				r.c.Add(s.Capacity[m.resource])
+				r.t.Add(s.Total[m.resource])
 				if _, ok := s.Capacity[m.resource]; !ok {
 					r.capOK = false
 				}
@@ -1520,10 +1525,11 @@ func (m model) aggregateView() string {
 			total.running.Add(r.running)
 			total.pending.Add(r.pending)
 			total.c.Add(r.c)
+			total.t.Add(r.t)
 			total.usageOK = total.usageOK && r.usageOK
 			total.capOK = total.capOK && r.capOK
 		}
-		b.WriteString(fmt.Sprintf("  %-22s %s  running %s  pending %s  allocatable %s\n", trim(string(resource), 22), pair(total.u, total.q, total.usageOK), render(total.running), render(total.pending), render(total.c)))
+		b.WriteString(fmt.Sprintf("  %-22s %s  running %s  pending %s  total %s  allocatable %s  req/alloc %s\n", trim(string(resource), 22), pair(total.u, total.q, total.usageOK), render(total.running), render(total.pending), render(total.t), render(total.c), ratio(total.q, total.c, total.capOK)))
 	}
 	return b.String()
 }
