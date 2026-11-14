@@ -9,6 +9,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -28,10 +29,13 @@ func watchTarget(ctx context.Context, t target, aliases []aliasRule, updates cha
 		sendSnapshot(ctx, updates, snapshot{Target: t, Err: err.Error()})
 		return
 	}
-	state := &watchState{target: t, aliases: aliases, pods: map[string]pod{}, nodes: map[string]corev1.Node{}}
+	state := &watchState{target: t, aliases: aliases, pods: map[string]pod{}, nodes: map[string]corev1.Node{}, owners: ownerMap{}}
 	factory := informers.NewSharedInformerFactory(client, 0)
 	pods := factory.Core().V1().Pods().Informer()
 	nodes := factory.Core().V1().Nodes().Informer()
+	replicaSets := factory.Apps().V1().ReplicaSets().Informer()
+	jobs := factory.Batch().V1().Jobs().Informer()
+	statefulSets := factory.Apps().V1().StatefulSets().Informer()
 	dirty := make(chan struct{}, 1)
 	notify := func() {
 		select {
@@ -69,6 +73,20 @@ func watchTarget(ctx context.Context, t target, aliases []aliasRule, updates cha
 		},
 		DeleteFunc: func(v interface{}) { state.deleteNode(v); notify() },
 	})
+	// Owner informers roll pod owners up to the top workload: ReplicaSet →
+	// Deployment, Job → CronJob, StatefulSet → LeaderWorkerSet or any CRD
+	// managing StatefulSets. The top owner's kind comes from the owner
+	// reference, so the CRD itself is never watched.
+	trackOwner := func(kind string, informer cache.SharedIndexInformer) {
+		informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc:    func(v interface{}) { state.setOwner(kind, v); notify() },
+			UpdateFunc: func(_, v interface{}) { state.setOwner(kind, v); notify() },
+			DeleteFunc: func(v interface{}) { state.deleteOwner(kind, v); notify() },
+		})
+	}
+	trackOwner("ReplicaSet", replicaSets)
+	trackOwner("Job", jobs)
+	trackOwner("StatefulSet", statefulSets)
 	go func() {
 		for {
 			select {
@@ -84,6 +102,11 @@ func watchTarget(ctx context.Context, t target, aliases []aliasRule, updates cha
 	if !cache.WaitForCacheSync(ctx.Done(), pods.HasSynced, nodes.HasSynced) {
 		return
 	}
+	// Owner objects are best-effort: without RBAC to list them the cluster
+	// still renders, with workloads attributed one level deep.
+	grace, cancelGrace := context.WithTimeout(ctx, 2*time.Second)
+	cache.WaitForCacheSync(grace.Done(), replicaSets.HasSynced, jobs.HasSynced, statefulSets.HasSynced)
+	cancelGrace()
 	notify()
 	<-ctx.Done()
 }
@@ -94,6 +117,7 @@ type watchState struct {
 	aliases []aliasRule
 	pods    map[string]pod
 	nodes   map[string]corev1.Node
+	owners  ownerMap
 }
 
 func (s *watchState) setPod(p *corev1.Pod) {
@@ -108,7 +132,9 @@ func (s *watchState) setPod(p *corev1.Pod) {
 	if p.Status.Phase == corev1.PodPending {
 		requests = pendingNPURequests(requests, p.Labels)
 	}
-	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Workload: ownerForPod(p.Namespace, p.Name, p.OwnerReferences, nil), Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, CreatedAt: p.CreationTimestamp.Time}
+	// Workload attribution resolves at snapshot time: owner objects may
+	// arrive after their pods, and late arrivals re-notify.
+	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, CreatedAt: p.CreationTimestamp.Time}
 }
 func pendingNPURequests(requests qtys, labels map[string]string) qtys {
 	model := labels["ascend-ci.com/npu-resource-model"]
@@ -148,6 +174,32 @@ func (s *watchState) deleteNode(v interface{}) {
 		delete(s.nodes, n.Name)
 	}
 }
+
+// setOwner records the top workload for an intermediate owner object
+// (ReplicaSet, Job, StatefulSet) from its controller owner reference.
+func (s *watchState) setOwner(kind string, v interface{}) {
+	if d, ok := v.(cache.DeletedFinalStateUnknown); ok {
+		v = d.Obj
+	}
+	if o, ok := v.(metav1.Object); ok {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.owners == nil {
+			s.owners = ownerMap{}
+		}
+		s.owners[kind+"/"+o.GetNamespace()+"/"+o.GetName()] = topOwner(o.GetOwnerReferences(), kind, o.GetName())
+	}
+}
+func (s *watchState) deleteOwner(kind string, v interface{}) {
+	if d, ok := v.(cache.DeletedFinalStateUnknown); ok {
+		v = d.Obj
+	}
+	if o, ok := v.(metav1.Object); ok {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.owners, kind+"/"+o.GetNamespace()+"/"+o.GetName())
+	}
+}
 func (s *watchState) snapshot() snapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -155,6 +207,7 @@ func (s *watchState) snapshot() snapshot {
 	pendingAliases := s.singleAliasRules()
 	for _, raw := range s.pods {
 		p := raw
+		p.Workload = ownerForPod(p.Namespace, p.Name, p.OwnerRefs, s.owners)
 		// A pod is offloaded to a remote provider when Liqo marked it
 		// (a liqo.io/ annotation) or scheduled it onto a virtual node.
 		for k := range p.Annotations {

@@ -13,7 +13,7 @@ go run . -t --test-concurrency 16 --test-timeout 2s --kubeconfig-dir /path/to/ku
 
 On first launch, select contexts with `Space` and press `Enter`. It persists the selection in `${XDG_CONFIG_HOME:-~/.config}/kube-resource-top/config.json` (override with `--config`); kubeconfig contexts newly added to the directory are selected automatically on the next launch.
 
-- `Enter` / `Backspace`: drill down or up (cluster → namespace → workload → Pod)
+- `Enter` / `Backspace`: drill down or up (cluster → namespace → workload → Pod). Workload rows group Pods by their top-level controller — Deployment, CronJob, StatefulSet, LeaderWorkerSet, or any CRD that manages ReplicaSets, Jobs, or StatefulSets — resolved from controller owner references
 - `1`, `2`, `3`/`Tab`: CPU, memory, or cycle discovered resources; `m` opens multi-resource selection
 - `b`: toggle per-node view. It opens on the current drill-down context and resource; `v` cycles drill → all nodes/resources → selected contexts → selected resource types. `m` and `c` retain their multi-selections for the latter two scopes. The table shows allocatable, requested, pending, and remaining capacity with a per-pod breakdown; `3`/`Tab` cycles selected resources and `Esc` leaves the view; `s` / `S`: cycle/reverse sort; `q`: quit
 

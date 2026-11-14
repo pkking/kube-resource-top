@@ -5,11 +5,55 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/cache"
 )
+
+func TestSnapshotResolvesWorkloadOwnerChain(t *testing.T) {
+	controller := true
+	owned := func(kind, name string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{Kind: kind, Name: name, Controller: &controller}}
+	}
+	s := &watchState{pods: map[string]pod{
+		"n/lws-pod":    {Namespace: "n", Name: "lws-pod", OwnerRefs: owned("StatefulSet", "train-worker")},
+		"n/deploy-pod": {Namespace: "n", Name: "deploy-pod", OwnerRefs: owned("ReplicaSet", "app-abc123")},
+		"n/cron-pod":   {Namespace: "n", Name: "cron-pod", OwnerRefs: owned("Job", "migrate-282")},
+		"n/sts-pod":    {Namespace: "n", Name: "sts-pod", OwnerRefs: owned("StatefulSet", "db")},
+	}, nodes: map[string]corev1.Node{}}
+	// owner objects arrive after their pods: snapshot-time resolution must roll up
+	s.setOwner("StatefulSet", &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "train-worker", OwnerReferences: owned("LeaderWorkerSet", "train")}})
+	s.setOwner("ReplicaSet", &appsv1.ReplicaSet{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "app-abc123", OwnerReferences: owned("Deployment", "app")}})
+	s.setOwner("Job", &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "migrate-282", OwnerReferences: owned("CronJob", "nightly")}})
+	want := map[string]string{
+		"lws-pod":    "LeaderWorkerSet/train",
+		"deploy-pod": "Deployment/app",
+		"cron-pod":   "CronJob/nightly",
+		"sts-pod":    "StatefulSet/db", // no owner entry: stays one level deep
+	}
+	snap := s.snapshot()
+	for _, p := range snap.Pods {
+		if p.Workload != want[p.Name] {
+			t.Fatalf("%s workload=%q, want %q", p.Name, p.Workload, want[p.Name])
+		}
+	}
+	s.deleteOwner("StatefulSet", &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "train-worker"}})
+	if wl := workloadOf(s.snapshot().Pods, "lws-pod"); wl != "StatefulSet/train-worker" {
+		t.Fatalf("deleted owner must fall back one level, got %q", wl)
+	}
+}
+
+func workloadOf(pods []pod, name string) string {
+	for _, p := range pods {
+		if p.Name == name {
+			return p.Workload
+		}
+	}
+	return ""
+}
 
 func TestPendingRequestUsesOnlyClusterAlias(t *testing.T) {
 	source, alias := corev1.ResourceName("huawei.com/ascend-1980"), corev1.ResourceName("910C")
