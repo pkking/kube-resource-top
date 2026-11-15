@@ -205,20 +205,27 @@ func (s *watchState) snapshot() snapshot {
 	defer s.mu.Unlock()
 	out := snapshot{Target: s.target, Capacity: qtys{}, Total: qtys{}}
 	pendingAliases := s.singleAliasRules()
+	virtualNodes := s.hasVirtualNodes()
 	for _, raw := range s.pods {
 		p := raw
 		p.Workload = ownerForPod(p.Namespace, p.Name, p.OwnerRefs, s.owners)
-		// A pod is offloaded to a remote provider when Liqo marked it
-		// (a liqo.io/ annotation) or scheduled it onto a virtual node.
-		for k := range p.Annotations {
-			if strings.HasPrefix(k, "liqo.io/") {
-				p.Offloaded = true
-				break
-			}
-		}
-		if !p.Offloaded && p.NodeName != "" {
+		// Offloaded work runs on (or waits for) a Liqo virtual node.
+		// Annotations alone prove nothing: Liqo providers run ShadowPod
+		// reflections that inherit the consumer's liqo.io/ annotations while
+		// consuming local devices, and clusters queue their own annotated
+		// pods for local capacity. A liqo.io/ annotation only marks an
+		// unscheduled pod as waiting-to-offload in a cluster that has
+		// virtual nodes (ADR 0031).
+		if p.NodeName != "" {
 			if node, ok := s.nodes[p.NodeName]; ok {
 				p.Offloaded = node.Labels["liqo.io/type"] == "virtual-node"
+			}
+		} else if !shadowOwned(p.OwnerRefs) && virtualNodes {
+			for k := range p.Annotations {
+				if strings.HasPrefix(k, "liqo.io/") {
+					p.Offloaded = true
+					break
+				}
 			}
 		}
 		if p.Phase == corev1.PodPending {
@@ -249,6 +256,28 @@ func sumInto(dst, src qtys) {
 		value.Add(quantity)
 		dst[resourceName] = value
 	}
+}
+
+// hasVirtualNodes reports whether this cluster currently has Liqo virtual
+// nodes, i.e. whether offloading targets exist at all.
+func (s *watchState) hasVirtualNodes() bool {
+	for _, n := range s.nodes {
+		if n.Labels["liqo.io/type"] == "virtual-node" {
+			return true
+		}
+	}
+	return false
+}
+
+// shadowOwned reports whether the pod is a Liqo ShadowPod reflection: those
+// run in the provider cluster and are local demand at any phase.
+func shadowOwned(refs []metav1.OwnerReference) bool {
+	for _, r := range refs {
+		if r.Kind == "ShadowPod" {
+			return true
+		}
+	}
+	return false
 }
 func nodeIP(node corev1.Node) string {
 	for _, address := range node.Status.Addresses {

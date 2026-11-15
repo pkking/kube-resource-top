@@ -23,7 +23,7 @@ The ALL CONTEXTS summary at the top of every view lists each selected resource's
 
 The TUI uses Kubernetes List+Watch informers (without a refresh timer) for Pods and Nodes. CPU/memory usage is `N/A` until a streaming metrics source is configured: Metrics Server exposes list/get data, not a reliable Watch stream.
 
-Pods that Liqo offloads to a remote provider cluster are treated as remote work, not local consumer demand, so they are excluded from the consumer cluster's context, pod-drill, and per-node views (otherwise they'd inflate the consumer's request/pending counts). A pod is detected as offloaded when it carries any `liqo.io/` annotation (e.g. `liqo.io/api-server-support`) — which marks pods intended for offloading, including unscheduled ones still waiting to land on a virtual node — or when it is scheduled onto a Liqo virtual node (labeled `liqo.io/type=virtual-node`).
+Pods that Liqo offloads to a remote provider cluster are remote work, excluded from their cluster's context, pod-drill, and per-node views. Offloading is decided by placement: a pod scheduled onto a Liqo virtual node (labeled `liqo.io/type=virtual-node`) is remote, and an unscheduled pod carrying a `liqo.io/` annotation counts as offloading-in-progress only while the cluster has virtual nodes. Annotations alone prove nothing — Liqo provider clusters run offloaded work as ShadowPod-owned pods that inherit the consumer's annotations while consuming local devices, and clusters may run or queue their own annotated pods for local capacity. ShadowPod reflections and any pod on a real node are always local demand.
 
 ## Node resource aliases
 

@@ -124,6 +124,33 @@ func TestWatchStateTracksOnlyScheduledDemand(t *testing.T) {
 	}
 }
 
+func TestProviderSideLiqoPodsAreLocalDemand(t *testing.T) {
+	// Real guiyang-005 case: no virtual node exists, yet Liqo ShadowPod
+	// reflections and gang-queued annotated StatefulSet (LWS) pods consume
+	// and await local devices. Annotations must not hide them.
+	ann := map[string]string{"liqo.io/api-server-support": "remote"}
+	controller := true
+	s := &watchState{target: target{ID: "c"}, pods: map[string]pod{}, nodes: map[string]corev1.Node{"node-a": {ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")}}}}}
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "shadow", Namespace: "ns", Annotations: ann, OwnerReferences: []metav1.OwnerReference{{Kind: "ShadowPod", Name: "shadow", Controller: &controller}}}, Spec: corev1.PodSpec{NodeName: "node-a"}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "gang", Namespace: "ns", Annotations: ann, OwnerReferences: []metav1.OwnerReference{{Kind: "StatefulSet", Name: "lws", Controller: &controller}}}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
+	for _, p := range s.snapshot().Pods {
+		if p.Offloaded {
+			t.Fatalf("%s: provider-side pod must stay local demand", p.Name)
+		}
+	}
+	// Same pods in a peering cluster: only the unscheduled non-shadow pod
+	// waits for offload; the ShadowPod reflection stays local.
+	s.nodes["liqo-remote"] = corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "liqo-remote", Labels: map[string]string{"liqo.io/type": "virtual-node"}}}
+	for _, p := range s.snapshot().Pods {
+		if p.Name == "gang" && !p.Offloaded {
+			t.Fatal("annotated unscheduled pod in a peering cluster should be offloaded")
+		}
+		if p.Name == "shadow" && p.Offloaded {
+			t.Fatal("ShadowPod reflection stays local demand")
+		}
+	}
+}
+
 func TestSnapshotMarksLiqoVirtualNodePodsAsOffloaded(t *testing.T) {
 	realNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")}}}
 	vNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "liqo-remote", Labels: map[string]string{"liqo.io/type": "virtual-node"}}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("8")}}}
@@ -149,8 +176,12 @@ func TestSnapshotMarksLiqoVirtualNodePodsAsOffloaded(t *testing.T) {
 }
 
 func TestSnapshotMarksLiqoAnnotatedUnscheduledPodsAsOffloaded(t *testing.T) {
-	// Real cn12 case: unscheduled pending runner pods carry a liqo.io/ annotation.
-	s := &watchState{target: target{ID: "c"}, pods: map[string]pod{}, nodes: map[string]corev1.Node{"node-a": {ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")}}}}}
+	// Real cn12 case (consumer with virtual nodes): unscheduled pending
+	// runner pods carry a liqo.io/ annotation and wait to be offloaded.
+	s := &watchState{target: target{ID: "c"}, pods: map[string]pod{}, nodes: map[string]corev1.Node{
+		"node-a":      {ObjectMeta: metav1.ObjectMeta{Name: "node-a"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("4")}}},
+		"liqo-remote": {ObjectMeta: metav1.ObjectMeta{Name: "liqo-remote", Labels: map[string]string{"liqo.io/type": "virtual-node"}}},
+	}}
 	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p-offload", Namespace: "ns", Annotations: map[string]string{"liqo.io/api-server-support": "remote"}}, Status: corev1.PodStatus{Phase: corev1.PodPending}})
 	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p-local", Namespace: "ns"}, Spec: corev1.PodSpec{NodeName: "node-a"}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
 	snap := s.snapshot()
