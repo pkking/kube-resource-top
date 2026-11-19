@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 func TestNodeBalanceShowsAllocatableAndRunningRequests(t *testing.T) {
@@ -70,6 +71,44 @@ func TestAggregateViewShowsTotalAndOccupancy(t *testing.T) {
 	}
 	if strings.Contains(out, "N/A") {
 		t.Fatalf("aggregate view must not show the usage pair:\n%s", out)
+	}
+}
+
+func TestUnaliasedCardsStayVisibleWithoutDoubleCount(t *testing.T) {
+	// Real cn12-001 case: nodes matching no alias rule keep their capacity and
+	// pod demand on the raw resource, which the user never selected. The raw
+	// remainder must surface next to the alias lines, disjoint from them.
+	ascend, b1 := corev1.ResourceName("huawei.com/ascend-1980"), corev1.ResourceName("910B1")
+	aliases := []aliasRule{{Alias: "910B1", Resource: string(ascend), Labels: map[string]string{"chip": "910B1"}, Unit: 1}}
+	s := &watchState{target: target{ID: "c", Context: "cluster"}, aliases: aliases, pods: map[string]pod{}, nodes: map[string]corev1.Node{
+		"aliased": {ObjectMeta: metav1.ObjectMeta{Name: "aliased", Labels: map[string]string{"chip": "910B1"}}, Status: corev1.NodeStatus{Capacity: corev1.ResourceList{ascend: resource.MustParse("8")}, Allocatable: corev1.ResourceList{ascend: resource.MustParse("8")}}},
+		"plain":   {ObjectMeta: metav1.ObjectMeta{Name: "plain"}, Status: corev1.NodeStatus{Capacity: corev1.ResourceList{ascend: resource.MustParse("16")}, Allocatable: corev1.ResourceList{ascend: resource.MustParse("16")}}},
+	}}
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "on-aliased"}, Spec: corev1.PodSpec{NodeName: "aliased", Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{ascend: resource.MustParse("2")}}}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "on-plain"}, Spec: corev1.PodSpec{NodeName: "plain", Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{ascend: resource.MustParse("4")}}}}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	m := model{resource: b1, aliases: aliases, width: 200, height: 40, resourceSelected: map[corev1.ResourceName]bool{b1: true}, snaps: map[string]snapshot{"c": s.snapshot()}}
+	out := m.aggregateView()
+	for _, want := range []string{"910B1", "running 2", "allocatable 8", "huawei.com/ascend-1980", "running 4", "allocatable 16"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("aggregate missing %q (raw remainder must surface, disjoint from the alias line):\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "total 24") != 0 || strings.Count(out, "total 8") != 1 || strings.Count(out, "total 16") != 1 {
+		t.Fatalf("raw and aliased totals must stay disjoint (no combined or double count):\n%s", out)
+	}
+}
+
+func TestIdleClusterCapacityCountsTotals(t *testing.T) {
+	// A cluster with allocatable cards but no requesting pods must still
+	// contribute to the totals instead of vanishing (ADR 0032).
+	gpu := corev1.ResourceName("example.com/gpu")
+	m := model{resource: gpu, resourceSelected: map[corev1.ResourceName]bool{gpu: true}, width: 200, height: 40, snaps: map[string]snapshot{"c": {Target: target{ID: "c", Context: "cluster"}, Total: qtys{gpu: resource.MustParse("16")}, Capacity: qtys{gpu: resource.MustParse("16")}}}}
+	rows := m.rows()
+	if len(rows) != 1 || rows[0].c.Value() != 16 || rows[0].t.Value() != 16 {
+		t.Fatalf("idle capacity row missing: %#v", rows)
+	}
+	if out := m.aggregateView(); !strings.Contains(out, "total 16") || !strings.Contains(out, "allocatable 16") {
+		t.Fatalf("idle capacity invisible in aggregate:\n%s", out)
 	}
 }
 

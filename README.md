@@ -44,3 +44,5 @@ Rules can also be added directly to the saved config:
 ```
 
 `unit` is the number of underlying resource units per displayed alias unit (default: `1`): with `unit: 2`, two `huawei.com/ascend-1980` display as one `atlas-800i`. Matching Node capacity and Running Pod requests are scaled this way; Pending Pods retain the original resource because they have no assigned Node. Pending Pods also contribute a raw request from `ascend-ci.com/npu-resource-model` and positive integer `ascend-ci.com/required-npu-count` labels; an unqualified model such as `ascend-1980` maps to `huawei.com/ascend-1980`. When a cluster has exactly one matching alias for that resource, its Pending demand uses that alias and unit; otherwise it remains raw.
+
+Cards on nodes that match no alias rule stay on the raw resource name. The aggregate and table views surface that raw remainder automatically (alongside the alias lines), so no card-holding pod or idle card pool hides behind an unselected resource; raw and aliased lines are disjoint and nothing is counted twice.

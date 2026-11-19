@@ -1125,7 +1125,7 @@ type displayRow struct {
 
 func (m model) displayRows() []displayRow {
 	var out []displayRow
-	for _, resource := range m.selectedResources() {
+	for _, resource := range m.accountedResources() {
 		copy := m
 		copy.resource = resource
 		for _, row := range copy.rows() {
@@ -1234,10 +1234,23 @@ func hasAllocatable(s snapshot, resourceName corev1.ResourceName) bool {
 func (m model) rows() []row {
 	level := len(m.scope)
 	grouped := map[string]*row{}
-	capacityAdded := map[string]bool{}
 	for _, s := range m.snaps {
 		if s.Err != "" || !hasAllocatable(s, m.resource) {
 			continue
+		}
+		if level == 0 {
+			// Context capacity counts even without requesting pods, so idle
+			// pools stay visible in the totals (ADR 0032).
+			r := grouped[s.Target.ID]
+			if r == nil {
+				r = &row{key: s.Target.ID, name: filepath.Base(s.Target.Path) + " :: " + display(s.Target.Context), usageOK: true, capOK: true}
+				grouped[s.Target.ID] = r
+			}
+			r.c.Add(s.Capacity[m.resource])
+			r.t.Add(s.Total[m.resource])
+			if _, ok := s.Capacity[m.resource]; !ok {
+				r.capOK = false
+			}
 		}
 		for _, p := range s.Pods {
 			// Offloaded pods (Liqo virtual nodes) run on the remote provider cluster;
@@ -1291,14 +1304,6 @@ func (m model) rows() []row {
 				r.u.Add(v)
 			} else {
 				r.usageOK = false
-			}
-			if level == 0 && !capacityAdded[s.Target.ID] {
-				capacityAdded[s.Target.ID] = true
-				r.c.Add(s.Capacity[m.resource])
-				r.t.Add(s.Total[m.resource])
-				if _, ok := s.Capacity[m.resource]; !ok {
-					r.capOK = false
-				}
 			}
 		}
 	}
@@ -1376,6 +1381,46 @@ func (m model) selectedResources() []corev1.ResourceName {
 		}
 	}
 	return out
+}
+
+// accountedResources returns the selected resources plus the raw underlying
+// resources of alias rules whose capacity or demand escaped aliasing — cards
+// on nodes matching no rule and Pending demand in multi-alias clusters — so
+// no card-holding pod stays invisible (ADR 0032). Raw and aliased quantities
+// are disjoint: aliasing renames per node, first matching rule wins.
+func (m model) accountedResources() []corev1.ResourceName {
+	out := m.selectedResources()
+	seen := map[corev1.ResourceName]bool{}
+	for _, r := range out {
+		seen[r] = true
+	}
+	underlying := map[corev1.ResourceName]bool{}
+	for _, rule := range m.aliases {
+		underlying[corev1.ResourceName(rule.Resource)] = true
+	}
+	var extra []corev1.ResourceName
+	for _, s := range m.snaps {
+		for r := range underlying {
+			if seen[r] || s.Err != "" {
+				continue
+			}
+			total, alloc := s.Total[r], s.Capacity[r]
+			if !total.IsZero() || !alloc.IsZero() {
+				seen[r] = true
+				extra = append(extra, r)
+				continue
+			}
+			for _, p := range s.Pods {
+				if q := p.Requests[r]; !q.IsZero() {
+					seen[r] = true
+					extra = append(extra, r)
+					break
+				}
+			}
+		}
+	}
+	sort.Slice(extra, func(i, j int) bool { return extra[i] < extra[j] })
+	return append(out, extra...)
 }
 func (m model) nextResource() corev1.ResourceName {
 	resources := m.availableResources()
@@ -1514,7 +1559,7 @@ func (m model) scopeLabel(level int, key string) string {
 func (m model) aggregateView() string {
 	var b strings.Builder
 	b.WriteString("\n  ALL CONTEXTS\n")
-	for _, resource := range m.selectedResources() {
+	for _, resource := range m.accountedResources() {
 		all := m
 		all.scope = nil
 		all.resource = resource
