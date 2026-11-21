@@ -55,6 +55,35 @@ func workloadOf(pods []pod, name string) string {
 	return ""
 }
 
+func TestSnapshotExcludesVirtualNodeCapacity(t *testing.T) {
+	// Real cn12-001 case: Liqo virtual nodes expose a remote cluster's cards
+	// (4 virtual nodes carried 624 remote cards — 77% of the apparent pool).
+	// They must not enter the node list or capacity sums, while pods on them
+	// stay offloaded via the live node map.
+	gpu := corev1.ResourceName("example.com/gpu")
+	s := &watchState{pods: map[string]pod{}, nodes: map[string]corev1.Node{
+		"real":        {ObjectMeta: metav1.ObjectMeta{Name: "real"}, Status: corev1.NodeStatus{Capacity: corev1.ResourceList{gpu: resource.MustParse("4")}, Allocatable: corev1.ResourceList{gpu: resource.MustParse("4")}}},
+		"liqo-remote": {ObjectMeta: metav1.ObjectMeta{Name: "liqo-remote", Labels: map[string]string{"liqo.io/type": "virtual-node"}}, Status: corev1.NodeStatus{Capacity: corev1.ResourceList{gpu: resource.MustParse("8")}, Allocatable: corev1.ResourceList{gpu: resource.MustParse("8")}}},
+	}}
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "offloaded"}, Spec: corev1.PodSpec{NodeName: "liqo-remote"}, Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	snap := s.snapshot()
+	if got := len(snap.Nodes); got != 1 {
+		t.Fatalf("virtual node must be excluded from the node list, got %d nodes", got)
+	}
+	alloc, total := snap.Capacity[gpu], snap.Total[gpu]
+	if got := alloc.Value(); got != 4 {
+		t.Fatalf("allocatable=%d, want 4 (remote capacity excluded)", got)
+	}
+	if got := total.Value(); got != 4 {
+		t.Fatalf("total=%d, want 4 (remote capacity excluded)", got)
+	}
+	for _, p := range snap.Pods {
+		if p.Name == "offloaded" && !p.Offloaded {
+			t.Fatal("pod on virtual node must stay offloaded after capacity exclusion")
+		}
+	}
+}
+
 func TestPendingRequestUsesOnlyClusterAlias(t *testing.T) {
 	source, alias := corev1.ResourceName("huawei.com/ascend-1980"), corev1.ResourceName("910C")
 	s := &watchState{aliases: []aliasRule{{Alias: string(alias), Resource: string(source), Labels: map[string]string{"model": "910C"}, Unit: 2}}, pods: map[string]pod{"n/p": {Namespace: "n", Name: "p", Phase: corev1.PodPending, Requests: qtys{source: resource.MustParse("2")}}}, nodes: map[string]corev1.Node{"node": {ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"model": "910C"}}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{source: resource.MustParse("8")}}}}}

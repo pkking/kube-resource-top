@@ -240,6 +240,11 @@ func (s *watchState) snapshot() snapshot {
 		out.Pods = append(out.Pods, p)
 	}
 	for _, n := range s.nodes {
+		if n.Labels["liqo.io/type"] == "virtual-node" {
+			// Virtual nodes expose a remote cluster's capacity; the cards live
+			// in the provider cluster, which counts them itself (ADR 0033).
+			continue
+		}
 		allocatable := aliasQuantities(qtys(n.Status.Allocatable), n, s.aliases)
 		total := aliasQuantities(qtys(n.Status.Capacity), n, s.aliases)
 		out.Nodes = append(out.Nodes, nodeInfo{Name: n.Name, IP: nodeIP(n), Labels: n.Labels, Annotations: n.Annotations, Capacity: allocatable})
@@ -295,6 +300,9 @@ func nodeIP(node corev1.Node) string {
 func (s *watchState) singleAliasRules() map[corev1.ResourceName]aliasRule {
 	matches := map[corev1.ResourceName]map[string]aliasRule{}
 	for _, node := range s.nodes {
+		if node.Labels["liqo.io/type"] == "virtual-node" {
+			continue // remote capacity must not shape local pending attribution
+		}
 		matched := map[corev1.ResourceName]bool{}
 		for _, rule := range s.aliases {
 			source := corev1.ResourceName(rule.Resource)
