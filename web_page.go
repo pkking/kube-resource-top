@@ -186,7 +186,7 @@ function htmlCapacity(){
       +'<thead><tr><th>集群</th><th>总量</th><th>运行中</th><th>排队</th><th>可分配</th><th>空闲</th><th>空闲机器</th><th>单机最大空闲</th><th>状态</th></tr></thead><tbody>';
     res.clusters.forEach(function(c,ci){
       h+='<tr><td>'+esc(cname(c.cluster))+'</td><td>'+fmtN(c.total)+'</td><td>'+fmtN(c.running)+'</td><td class="'+(c.pending>0?'hot':'')+'">'+fmtN(c.pending)+'</td><td>'+fmtN(c.allocatable)+'</td><td>'+fmtN(c.free)+'</td><td>'+fmtN(c.freeNodes)+'</td><td>'+fmtN(c.maxNodeFree)+'</td><td class="v '+c.verdict+'">'+vState(c.verdict)+'</td></tr>';
-      if(c.nodes.length>0){
+      if((c.nodes||[]).length>0){
         h+='<tr class="sub"><td colspan="9"><details class="nodes" id="dn'+ri+'-'+ci+'"'+(OPEN['dn'+ri+'-'+ci]?' open':'')+'><summary>机器明细 · '+c.nodes.length+'</summary><div class="scroll"><table><thead><tr><th>机器</th><th>IP</th><th>可分配</th><th>运行中</th><th>剩余</th></tr></thead><tbody>';
         c.nodes.forEach(function(n){
           h+='<tr><td>'+esc(n.name)+'</td><td class="dim">'+esc(n.ip||'')+'</td><td>'+fmtN(n.allocatable)+'</td><td>'+fmtN(n.running)+'</td><td class="'+(n.free>0?'ok':'')+'">'+fmtN(n.free)+'</td></tr>';
@@ -281,7 +281,15 @@ function poll(){
     STATE=s;FETCH_AT=Date.now();
     updateLive();
     var sig=JSON.stringify(s,function(k,v){return (k==='at'||k==='nowMs')?0:v});
-    if(sig!==LAST_SIG){LAST_SIG=sig;render()}
+    if(sig===LAST_SIG)return;
+    try{render();LAST_SIG=sig}
+    catch(e){
+      // A failed render must never wedge the page on the connecting screen:
+      // show the error and force the next poll to retry even if the data
+      // is unchanged.
+      LAST_SIG=null;
+      $('main').innerHTML='<div class="connecting">渲染出错，5 秒后自动重试：'+esc(e&&e.message?e.message:String(e))+'</div>';
+    }
   }).catch(function(){});
 }
 function syncTabs(){

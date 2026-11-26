@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -140,5 +142,31 @@ func TestWebStateShapesAccounting(t *testing.T) {
 	}
 	if res.PendingWorkloads != 2 {
 		t.Errorf("pendingWorkloads = %d, want 2", res.PendingWorkloads)
+	}
+}
+
+// The page indexes .length on every array field, so a nil slice marshaling as
+// null would wedge the first render (observed live on an absent cluster row).
+func TestWebStateJSONHasNoNullArrays(t *testing.T) {
+	r := corev1.ResourceName("huawei.com/ascend-910b")
+	app := &webApp{
+		targets: []target{{ID: "a", Path: "/kube/cn1.yaml", Context: "cn1"}},
+		snaps: map[string]snapshot{
+			// Pending-only cluster: allocatable 0, no nodes — the nil-slice trap.
+			"a": {Target: target{ID: "a", Path: "/kube/cn1.yaml", Context: "cn1"}, Capacity: qtys{}, Total: qtys{},
+				Pods: []pod{{Namespace: "dev", Name: "orphan-1", Workload: "Job/orphan", Phase: corev1.PodPending, Requests: qtys{r: qty(4)}}}},
+		},
+		resourceSelected: map[corev1.ResourceName]bool{r: true},
+		selected:         map[string]bool{"a": true},
+	}
+	b, err := json.Marshal(app.state())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	for _, bad := range []string{`"nodes":null`, `"clusters":null`, `"queue":null`, `"resources":null`} {
+		if strings.Contains(s, bad) {
+			t.Errorf("marshaled state contains %s; the page cannot render null arrays", bad)
+		}
 	}
 }

@@ -227,7 +227,7 @@ func (a *webApp) state() webState {
 		rm.resource = r
 		rm.sortBy = 4 // name order, like the TUI aggregate context rows
 		rows := rm.rows()
-		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1}
+		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, Clusters: []webClusterRes{}}
 		have := map[string]bool{}
 		for _, row := range rows {
 			have[row.key] = true
@@ -342,6 +342,9 @@ func webNodes(s snapshot, r corev1.ResourceName) []webNode {
 		}
 		run := running[n.Name]
 		out = append(out, webNode{Name: n.Name, IP: n.IP, Allocatable: alloc, Running: run, Free: alloc - run})
+	}
+	if out == nil {
+		out = []webNode{} // marshals as [] instead of null; the page indexes .length
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
