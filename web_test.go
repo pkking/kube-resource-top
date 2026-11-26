@@ -124,6 +124,9 @@ func TestWebStateShapesAccounting(t *testing.T) {
 	if res.Name != string(r) || res.Total != 32 || res.Allocatable != 16 || res.Running != 8 || res.Pending != 8 || res.Ratio != 1 {
 		t.Errorf("aggregate = %+v, want total 32 alloc 16 running 8 pending 8 ratio 1", res)
 	}
+	if res.RunningRatio != 0.5 {
+		t.Errorf("runRatio = %v, want 0.5 (running 8 / allocatable 16)", res.RunningRatio)
+	}
 	if len(res.Clusters) != 2 {
 		t.Fatalf("want 2 cluster rows, got %d", len(res.Clusters))
 	}

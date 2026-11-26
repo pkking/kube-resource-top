@@ -179,7 +179,8 @@ type webResource struct {
 	Allocatable      float64         `json:"allocatable"`
 	Running          float64         `json:"running"`
 	Pending          float64         `json:"pending"`
-	Ratio            float64         `json:"ratio"`
+	Ratio            float64         `json:"ratio"`    // 需求 (running+pending)/allocatable; -1 unknown (ADR 0028)
+	RunningRatio     float64         `json:"runRatio"` // 占用 running/allocatable; -1 unknown (ADR 0035)
 	CapOK            bool            `json:"capOK"`
 	PendingWorkloads int             `json:"pendingWorkloads"`
 	Clusters         []webClusterRes `json:"clusters"`
@@ -227,7 +228,7 @@ func (a *webApp) state() webState {
 		rm.resource = r
 		rm.sortBy = 4 // name order, like the TUI aggregate context rows
 		rows := rm.rows()
-		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, Clusters: []webClusterRes{}}
+		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, RunningRatio: -1, Clusters: []webClusterRes{}}
 		have := map[string]bool{}
 		for _, row := range rows {
 			have[row.key] = true
@@ -259,9 +260,11 @@ func (a *webApp) state() webState {
 		}
 		if res.CapOK && res.Allocatable > 0 {
 			res.Ratio = (res.Running + res.Pending) / res.Allocatable
+			res.RunningRatio = res.Running / res.Allocatable
 		} else {
 			res.CapOK = false
 			res.Ratio = -1
+			res.RunningRatio = -1
 		}
 		st.Resources = append(st.Resources, res)
 	}

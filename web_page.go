@@ -159,7 +159,7 @@ function emptyMsg(){
 }
 function htmlCapacity(){
   if(STATE.resources.length===0)return emptyMsg();
-  var h='<div class="legend"><span><i class="sw b"></i>运行中请求</span><span><i class="sw f"></i>空闲可分配</span><span><i class="sw d"></i>排队压力（运行中+排队）</span></div>';
+  var h='<div class="legend"><span><i class="sw b"></i>运行中请求（对应「占用」）</span><span><i class="sw f"></i>空闲可分配</span><span><i class="sw d"></i>需求（运行中+排队，对应「需求」，超出右缘即超配）</span></div>';
   STATE.resources.forEach(function(res,ri){
     var alloc=res.allocatable,run=res.running,pend=res.pending;
     var fill=alloc>0?Math.min(100,run/alloc*100):0;
@@ -176,11 +176,12 @@ function htmlCapacity(){
       +'<div class="demand">'+(pend>0?'<div class="dbar" data-w="'+dwidth.toFixed(3)+'" style="width:0"></div>':'')+'</div>'
       +'<div class="nums">'
       +'<span class="n"><i>总量</i><b>'+fmtN(res.total)+'</b></span>'
-      +'<span class="n"><i>占用</i><b class="'+ratioCls(res.ratio)+'">'+fmtRatio(res.ratio)+'</b></span>'
+      +'<span class="n" title="占用 = 运行中 ÷ 可分配（与上方填充条一致）"><i>占用</i><b class="'+ratioCls(res.runRatio)+'">'+fmtRatio(res.runRatio)+'</b></span>'
+      +'<span class="n" title="需求 =（运行中 + 排队）÷ 可分配，规划口径（ADR 0028），与红色需求线一致"><i>需求</i><b class="'+ratioCls(res.ratio)+'">'+fmtRatio(res.ratio)+'</b></span>'
       +'<span class="n"><i>运行中</i><b>'+fmtN(run)+'</b></span>'
       +'<span class="n"><i>排队</i><b class="'+(pend>0?'hot':'')+'">'+fmtN(pend)+'</b></span>'
       +'<span class="n"><i>可分配</i><b>'+fmtN(alloc)+'</b></span>'
-      +(over>0?'<span class="n"><i>超配</i><b class="hot">+'+fmtN(over)+'</b></span>':'')
+      +(over>0?'<span class="n" title="需求超出可分配的量 =（运行中+排队）− 可分配"><i>超配</i><b class="hot">+'+fmtN(over)+'</b></span>':'')
       +'</div></div>'
       +'<details class="clusters" id="dc'+ri+'"'+(OPEN['dc'+ri]?' open':'')+'><summary>集群明细 · '+res.clusters.length+'</summary><div class="scroll"><table>'
       +'<thead><tr><th>集群</th><th>总量</th><th>运行中</th><th>排队</th><th>可分配</th><th>空闲</th><th>空闲机器</th><th>单机最大空闲</th><th>状态</th></tr></thead><tbody>';
