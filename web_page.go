@@ -60,6 +60,9 @@ main{min-height:180px}
 .hole i{font-style:normal;font-size:11px;color:var(--dim)}
 .pdot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:8px;vertical-align:-1px}
 .pdot.un{background:var(--busy)}
+a{color:var(--gold);text-decoration:none;border-bottom:1px dotted rgba(210,164,78,.45)}
+a:hover{border-bottom-style:solid;color:var(--gold)}
+a:focus-visible{outline:2px solid var(--gold)}
 .projrow{display:flex;flex-wrap:wrap;gap:4px 18px;margin:7px 0 0;font-size:12.5px}
 .pl{color:var(--dim);white-space:nowrap}
 .pl b{font-family:var(--mono);font-weight:600;color:var(--ink);margin-left:5px}
@@ -178,7 +181,10 @@ function pColor(name){return PALETTE[hashStr(name)%PALETTE.length]}
 function hexA(hex,a){return 'rgba('+parseInt(hex.slice(1,3),16)+','+parseInt(hex.slice(3,5),16)+','+parseInt(hex.slice(5,7),16)+','+a+')'}
 function projCell(name){
   if(!name)return '<span class="pdot un"></span>未标记';
-  return '<span class="pdot" style="background:'+pColor(name)+'"></span>'+esc(name);
+  var url=name.indexOf('/')>=0
+    ?'https://github.com/'+esc(name)+'/actions'
+    :'https://github.com/search?type=repositories&q='+encodeURIComponent(name);
+  return '<span class="pdot" style="background:'+pColor(name)+'"></span><a href="'+url+'" target="_blank" rel="noopener">'+esc(name)+'</a>';
 }
 function fmtAge(ms){if(!(ms>=0))ms=0;var m=Math.floor(ms/60000);if(m<1)return '刚刚';var mi=m%60,h=Math.floor(m/60)%24,d=Math.floor(m/1440);if(d>0)return d+'天'+h+'时';if(h>0)return h+'时'+(mi?mi+'分':'');return m+'分'}
 function vWord(v){return {full:'卡已满',fragmented:'有空闲，但放不下队首',blocked:'有空闲，但未调度',absent:'集群没有这种资源',empty:'无排队'}[v]||v}
@@ -378,6 +384,13 @@ function htmlCapacity(){
       +(res.projects||[]).map(function(p){
         return '<tr><td>'+projCell(p.name)+'</td><td>'+fmtN(p.running)+'</td><td class="'+(p.pending>0?'hot':'')+'">'+fmtN(p.pending)+'</td><td>'+fmtN(p.running+p.pending)+'</td><td>'+fmtRatio(res.running+res.pending>0?(p.running+p.pending)/(res.running+res.pending):0)+'</td></tr>';
       }).join('')
+      +'</tbody></table></div></details>'
+      +'<details class="clusters" id="dt'+ri+'"'+(OPEN['dt'+ri]?' open':'')+'><summary>任务明细 · '+(res.tasks||[]).length+'</summary><div class="scroll"><table>'
+      +'<thead><tr><th>任务</th><th>项目</th><th>集群</th><th>运行（'+esc(res.unit)+'）</th></tr></thead><tbody>'
+      +(res.tasks||[]).slice(0,40).map(function(t){
+        return '<tr><td>'+esc(t.workload)+'</td><td>'+(t.project?projCell(t.project):'<span class="pdot un"></span>未标记')+'</td><td>'+esc(cname(t.cluster))+'</td><td>'+fmtN(t.run)+'</td></tr>';
+      }).join('')
+      +((res.tasks||[]).length>40?'<tr><td colspan="4" class="none">仅显示前 40 个，共 '+fmtN((res.tasks||[]).length)+' 个任务</td></tr>':'')
       +'</tbody></table></div></details>'
       +'<details class="clusters" id="dc'+ri+'"'+(OPEN['dc'+ri]?' open':'')+'><summary>集群明细 · '+res.clusters.length+'</summary><div class="scroll"><table>'
       +'<thead><tr><th>集群</th><th>总量</th><th>运行中</th><th>排队</th><th>可分配</th><th>空闲</th><th>空闲机器</th><th>单机最大空闲</th><th>状态</th></tr></thead><tbody>';
