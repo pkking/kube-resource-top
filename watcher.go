@@ -118,6 +118,13 @@ type watchState struct {
 	pods    map[string]pod
 	nodes   map[string]corev1.Node
 	owners  ownerMap
+	// Learned identity maps (ADR 0041): scale set → project, repository
+	// name → full project, and the observed organization set. They are
+	// durable knowledge for the watcher's lifetime, so late or deleted
+	// runners can still attribute their workflow pods and namespaces.
+	scaleSets map[string]string
+	repoNames map[string]string
+	orgs      map[string]bool
 }
 
 func (s *watchState) setPod(p *corev1.Pod) {
@@ -132,9 +139,28 @@ func (s *watchState) setPod(p *corev1.Pod) {
 	// The ascend-ci labels express device demand that scheduler requests do
 	// not carry — observed on ARC runner pods at both phases (ADR 0037).
 	requests = npuLabelRequests(requests, p.Labels)
-	// Workload attribution resolves at snapshot time: owner objects may
-	// arrive after their pods, and late arrivals re-notify.
-	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, Project: projectOfLabels(p.Labels), CreatedAt: p.CreationTimestamp.Time}
+	project := projectOfLabels(p.Labels)
+	if repo := p.Labels["actions.github.com/repository"]; repo != "" && project != "" {
+		if s.repoNames == nil {
+			s.repoNames = map[string]string{}
+		}
+		s.repoNames[repo] = project
+	}
+	if scaleSet := p.Labels["actions.github.com/scale-set-name"]; scaleSet != "" && project != "" {
+		if s.scaleSets == nil {
+			s.scaleSets = map[string]string{}
+		}
+		s.scaleSets[scaleSet] = project
+	}
+	if org := p.Labels["actions.github.com/organization"]; org != "" {
+		if s.orgs == nil {
+			s.orgs = map[string]bool{}
+		}
+		s.orgs[org] = true
+	}
+	// Workload and project attribution resolve at snapshot time: owner
+	// objects may arrive after their pods, and late arrivals re-notify.
+	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, Project: project, RunnerPodRef: p.Labels["runner-pod"], RunnerSet: runnerSetOf(p.Name), CreatedAt: p.CreationTimestamp.Time}
 }
 
 // npuLabelRequests adds the label-derived extended-resource request
@@ -161,17 +187,31 @@ func npuLabelRequests(requests qtys, labels map[string]string) qtys {
 
 // projectOfLabels reads the GitHub ARC runner project identity from the
 // pod's own labels (ADR 0037): organization/repository when both exist,
-// the repository alone otherwise. The labels survive Liqo ShadowPod
-// reflection, so offloaded runners keep their project at the provider.
+// the repository or organization alone otherwise — shared-pool runners
+// carry only the organization because they serve any repository (ADR 0041).
+// The labels survive Liqo ShadowPod reflection, so offloaded runners keep
+// their project at the provider.
 func projectOfLabels(labels map[string]string) string {
 	repo := labels["actions.github.com/repository"]
-	if repo == "" {
-		return ""
-	}
-	if org := labels["actions.github.com/organization"]; org != "" {
+	org := labels["actions.github.com/organization"]
+	switch {
+	case repo != "" && org != "":
 		return org + "/" + repo
+	case repo != "":
+		return repo
+	case org != "":
+		return org
 	}
-	return repo
+	return ""
+}
+
+// runnerSetOf extracts the ARC scale set from a pod name
+// (<scale-set>-runner-<id>[-workflow]); "" when the pattern is absent.
+func runnerSetOf(name string) string {
+	if i := strings.Index(name, "-runner-"); i > 0 {
+		return name[:i]
+	}
+	return ""
 }
 func (s *watchState) deletePod(v interface{}) {
 	s.mu.Lock()
@@ -257,6 +297,7 @@ func (s *watchState) snapshot() snapshot {
 				p.Limits = aliasQuantities(p.Limits, node, s.aliases)
 			}
 		}
+		p.Project = s.resolveProject(p)
 		out.Pods = append(out.Pods, p)
 	}
 	for _, n := range s.nodes {
@@ -272,6 +313,34 @@ func (s *watchState) snapshot() snapshot {
 		sumInto(out.Total, total)
 	}
 	return out
+}
+
+// resolveProject attributes a pod beyond its own labels (ADR 0041): ARC
+// workflow pods inherit their parent runner's project, falling back to the
+// learned scale-set map; any remaining pod in a namespace that exactly
+// matches an observed repository name or GitHub organization takes that
+// identity. Pool and system namespaces match nothing and stay unattributed.
+func (s *watchState) resolveProject(p pod) string {
+	if p.Project != "" {
+		return p.Project
+	}
+	if p.RunnerPodRef != "" {
+		if ref, ok := s.pods[p.Namespace+"/"+p.RunnerPodRef]; ok && ref.Project != "" {
+			return ref.Project
+		}
+		if p.RunnerSet != "" {
+			if project, ok := s.scaleSets[p.RunnerSet]; ok {
+				return project
+			}
+		}
+	}
+	if full, ok := s.repoNames[p.Namespace]; ok {
+		return full
+	}
+	if s.orgs[p.Namespace] {
+		return p.Namespace
+	}
+	return ""
 }
 
 // sumInto accumulates src quantities into dst.

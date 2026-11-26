@@ -66,9 +66,13 @@ type pod struct {
 	OwnerRefs                                []metav1.OwnerReference
 	Requests, Limits, Usage                  qtys
 	Annotations                              map[string]string
-	// Project is the runner's repository identity (ADR 0037); "" = unattributed.
-	Project   string
-	CreatedAt time.Time
+	// Project is the runner's repository identity (ADR 0037); "" until
+	// resolveProject attributes the pod at snapshot time (ADR 0041).
+	Project string
+	// RunnerPodRef names the parent ARC runner pod of a workflow pod;
+	// RunnerSet is the scale set parsed from the pod name (ADR 0041).
+	RunnerPodRef, RunnerSet string
+	CreatedAt               time.Time
 }
 type qtys map[corev1.ResourceName]resource.Quantity
 

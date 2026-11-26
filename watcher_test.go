@@ -146,12 +146,72 @@ func TestProjectOfLabels(t *testing.T) {
 	}{
 		{map[string]string{"actions.github.com/organization": "nv-action", "actions.github.com/repository": "vllm-benchmarks"}, "nv-action/vllm-benchmarks"},
 		{map[string]string{"actions.github.com/repository": "triton-ascend"}, "triton-ascend"},
-		{map[string]string{"actions.github.com/organization": "nv-action"}, ""},
+		{map[string]string{"actions.github.com/organization": "nv-action"}, "nv-action"},
+		{map[string]string{"actions.github.com/organization": "ascend-gha-runners"}, "ascend-gha-runners"}, // shared pool (ADR 0041)
 		{map[string]string{}, ""},
 	}
 	for _, c := range cases {
 		if got := projectOfLabels(c.labels); got != c.want {
 			t.Errorf("projectOfLabels(%v) = %q, want %q", c.labels, got, c.want)
+		}
+	}
+}
+
+func TestResolveProjectAtSnapshot(t *testing.T) {
+	controller := true
+	runner := func(name, ns string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name,
+			Labels: map[string]string{
+				"actions.github.com/organization":   "sgl-project",
+				"actions.github.com/repository":     "sglang",
+				"actions.github.com/scale-set-name": "linux-a3-sglang-fed-2",
+				"actions-ephemeral-runner":          "True",
+				"app.kubernetes.io/part-of":         "gha-runner-scale-set",
+			},
+			OwnerReferences: []metav1.OwnerReference{{Kind: "EphemeralRunner", Name: name, Controller: &controller}}},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	}
+	s := &watchState{pods: map[string]pod{}, nodes: map[string]corev1.Node{}}
+	s.setPod(runner("linux-a3-sglang-fed-2-runner-hlpnk", "arc-fedsched"))
+	// Workflow pod: only the runner-pod reference and the name's scale set.
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "arc-fedsched", Name: "linux-a3-sglang-fed-2-runner-hlpnk-workflow",
+		Labels: map[string]string{"runner-pod": "linux-a3-sglang-fed-2-runner-hlpnk"}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "arc-fedsched", Name: "linux-a3-sglang-fed-2-runner-zzz-workflow",
+		Labels: map[string]string{"runner-pod": "linux-a3-sglang-fed-2-runner-zzz"}},
+		Status: corev1.PodStatus{Phase: corev1.PodPending}})
+	// Namespace matches an observed repository name.
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "triton-ascend", Name: "train-lws-0",
+		Labels: map[string]string{"actions.github.com/organization": "triton-lang", "actions.github.com/repository": "triton-ascend"}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "triton-ascend", Name: "lws-0"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	// Namespace matches an observed organization.
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "vllm-project", Name: "shared-0",
+		Labels: map[string]string{"actions.github.com/organization": "vllm-project"}},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "vllm-project", Name: "eval-0"},
+		Status: corev1.PodStatus{Phase: corev1.PodRunning}})
+	// Pool namespace without identity: stays unattributed.
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "argo", Name: "1575591868752216065-pod"},
+		Status: corev1.PodStatus{Phase: corev1.PodPending}})
+
+	want := map[string]string{
+		"arc-fedsched/linux-a3-sglang-fed-2-runner-hlpnk":          "sgl-project/sglang",
+		"arc-fedsched/linux-a3-sglang-fed-2-runner-hlpnk-workflow": "sgl-project/sglang", // via runner-pod reference
+		"arc-fedsched/linux-a3-sglang-fed-2-runner-zzz-workflow":   "sgl-project/sglang", // parent gone → scale-set map
+		"triton-ascend/train-lws-0":                                "triton-lang/triton-ascend",
+		"triton-ascend/lws-0":                                      "triton-lang/triton-ascend", // namespace = repository name
+		"vllm-project/shared-0":                                    "vllm-project",
+		"vllm-project/eval-0":                                      "vllm-project", // namespace = organization
+		"argo/1575591868752216065-pod":                             "",
+	}
+	delete(s.pods, "arc-fedsched/linux-a3-sglang-fed-2-runner-hlpnk")
+	for _, p := range s.snapshot().Pods {
+		if w, ok := want[p.Namespace+"/"+p.Name]; !ok {
+			t.Errorf("unexpected pod %s/%s", p.Namespace, p.Name)
+		} else if p.Project != w {
+			t.Errorf("%s/%s project = %q, want %q", p.Namespace, p.Name, p.Project, w)
 		}
 	}
 }
