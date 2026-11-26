@@ -21,6 +21,21 @@ The ALL CONTEXTS summary at the top of every view lists each selected resource's
 
 `-t` reports every unusable file/context and exits with status 1; it checks kubeconfig parsing, authentication, and Kubernetes API discovery.
 
+## Web dashboard
+
+`--web ADDR` serves a read-only dashboard instead of the TUI, on the same watch state:
+
+```sh
+go run . --web 0.0.0.0:8080 --kubeconfig-dir /path/to/kubeconfigs
+```
+
+The page (Chinese UI) serves two audiences as two tabs:
+
+- **资源总览 (capacity)**: one chip strip per resource type showing total, occupancy (req/alloc), running, pending, and allocatable in ADR 0029's order, expandable to per-cluster and per-node tables.
+- **排队进度 (queue)**: per cluster, pending workloads ordered by creation time with queue position, wait age, and demand still ahead, plus a saturation verdict — full / fragmented (free cards exist but no single node fits the head pod) / blocked / cluster has none of this resource. No ETA is fabricated; judge from the head's wait and the free capacity.
+
+Cluster state still comes exclusively from the Kubernetes Watch; the browser polls `/api/state.json` every 5 s as a view refresh only. Target selection and alias editing remain in the TUI.
+
 The TUI uses Kubernetes List+Watch informers (without a refresh timer) for Pods and Nodes. CPU/memory usage is `N/A` until a streaming metrics source is configured: Metrics Server exposes list/get data, not a reliable Watch stream.
 
 Pods that Liqo offloads to a remote provider cluster are remote work, excluded from their cluster's context, pod-drill, and per-node views. Offloading is decided by placement: a pod scheduled onto a Liqo virtual node (labeled `liqo.io/type=virtual-node`) is remote, and an unscheduled pod carrying a `liqo.io/` annotation counts as offloading-in-progress only while the cluster has virtual nodes. Annotations alone prove nothing — Liqo provider clusters run offloaded work as ShadowPod-owned pods that inherit the consumer's annotations while consuming local devices, and clusters may run or queue their own annotated pods for local capacity. ShadowPod reflections and any pod on a real node are always local demand. Virtual nodes themselves are remote capacity: they are excluded from the totals, the per-node view, and the alias metadata pickers, and the provider cluster that physically holds the cards counts them once.

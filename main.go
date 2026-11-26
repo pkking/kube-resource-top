@@ -132,6 +132,7 @@ func main() {
 	testOnly := flag.Bool("t", false, "test every kubeconfig context and report unavailable entries")
 	testTimeout := flag.Duration("test-timeout", 3*time.Second, "per-context timeout for -t")
 	testConcurrency := flag.Int("test-concurrency", 8, "parallel context checks for -t")
+	webAddr := flag.String("web", "", "serve a read-only web dashboard at this address instead of the TUI (e.g. 0.0.0.0:8080)")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "--kubeconfig-dir is required")
@@ -139,6 +140,13 @@ func main() {
 	}
 	if *testOnly {
 		os.Exit(testKubeconfigs(*dir, *testTimeout, *testConcurrency))
+	}
+	if *webAddr != "" {
+		if err := runWeb(*webAddr, *dir, *configPath); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
 	}
 	targets, bad, err := discover(*dir)
 	if err != nil {
