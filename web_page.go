@@ -33,24 +33,31 @@ header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:fle
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--gold)}
 .tabs button:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
 main{min-height:180px}
-.noanim .fill,.noanim .queue{transition:none}
+.noanim .seg{transition:none}
 .connecting{color:var(--dim);padding:46px 0;text-align:center}
 .leg-note{color:var(--dim)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 22px;color:var(--dim);font-size:12.5px;margin:14px 0 4px}
 .sw{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;border-radius:2px}
 .sw.b{background:var(--busy)}
 .sw.q{background:repeating-linear-gradient(45deg,rgba(224,86,79,.6) 0 2px,transparent 2px 5px)}
+.sw.pc{background:#4cb8d9}
 .sw.f{border:1px solid #3a4c63}
 .res{border-bottom:1px solid var(--line);padding:16px 0 12px}
-.res-head{display:grid;grid-template-columns:240px 1fr;gap:0 24px}
+.res-head{display:grid;grid-template-columns:240px 1fr 122px;gap:0 24px}
 .res-name{grid-row:1/4;font-family:var(--mono);font-size:15px;color:var(--gold);overflow-wrap:anywhere}
 .res-name .kind{color:var(--dim);font-size:12px}
 .strip{position:relative;height:22px}
 .strip .cells{position:absolute;inset:0;display:flex;gap:2px}
 .strip .cell{flex:1;border:1px solid #223043;border-radius:2px}
-.strip .fill{position:absolute;top:0;bottom:0;left:0;background:var(--busy);transition:width .6s ease}
-.strip .queue{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,rgba(224,86,79,.6) 0 4px,transparent 4px 9px);transition:width .6s ease}
+.seg{position:absolute;top:0;bottom:0;transition:width .6s ease;border-right:1px solid rgba(11,16,23,.9)}
 .strip.nores .cell{border-style:dashed}
+.res-pie{grid-column:3;grid-row:1/3;align-self:center;justify-self:center}
+.donut{width:88px;height:88px;border-radius:50%;position:relative}
+.donut .hole{position:absolute;inset:17px;border-radius:50%;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.2}
+.donut .hole b{font-family:var(--mono);font-size:14px;color:var(--ink)}
+.donut .hole i{font-style:normal;font-size:11px;color:var(--dim)}
+.pdot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:8px;vertical-align:-1px}
+.pdot.un{background:var(--busy)}
 .nums{color:var(--dim);font-size:13px;display:flex;flex-wrap:wrap;gap:2px 20px}
 .nums .n i{font-style:normal;margin-right:6px}
 .nums .n b{font-family:var(--mono);font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
@@ -104,7 +111,7 @@ td.none{text-align:center;color:var(--dim)}
 .verdict.blocked{border-color:var(--gold)}.verdict.blocked b{color:var(--gold)}
 .verdict.absent{border-color:var(--dim)}.verdict.absent b{color:var(--dim)}
 .verdict.empty{border-color:var(--free)}.verdict.empty b{color:var(--free)}
-.qt td:nth-child(3),.qt td:nth-child(4),.qt th:nth-child(3),.qt th:nth-child(4){text-align:left}
+.qt td:nth-child(3),.qt td:nth-child(4),.qt td:nth-child(5),.qt th:nth-child(3),.qt th:nth-child(4),.qt th:nth-child(5){text-align:left}
 tr.mine td{background:rgba(210,164,78,.13)}
 .qinfo{color:var(--dim);font-size:12.5px;margin:6px 2px 0}
 footer{margin-top:36px;color:var(--dim);font-size:12.5px;border-top:1px solid var(--line);padding-top:12px}
@@ -113,10 +120,11 @@ footer .err{color:var(--full)}
 @media(max-width:720px){
   .res-head{grid-template-columns:1fr}
   .res-name{grid-row:auto;margin-bottom:2px}
+  .res-pie{grid-column:auto;grid-row:auto;justify-self:start;margin-top:6px}
   .wrap{padding:16px 14px 48px}
 }
 @media(prefers-reduced-motion:reduce){
-  .strip .fill,.strip .queue{transition:none}
+  .strip .seg{transition:none}
   .dot{animation:none}
 }
 </style>
@@ -142,6 +150,15 @@ function now(){return STATE?STATE.nowMs+(Date.now()-FETCH_AT):Date.now()}
 function fmtN(v){if(!isFinite(v))return '—';var r=Math.round(v*10)/10;return r.toLocaleString('zh-CN')}
 function fmtRatio(v){if(!(v>=0))return '—';return Math.round(v*100)+'%'}
 function ratioCls(v){return v>=1?'hot':(v>=0.8?'warn':'')}
+// Project palette (ADR 0037): hues deliberately distinct from the reserved
+// state colors (amber/red/green). A project keeps its color across views.
+var PALETTE=['#4cb8d9','#5b8ee6','#9a7fe0','#c77bd9','#d97bb8','#a3c94d','#6fd0c0','#c98f6a'];
+function pColor(name){var h=0;for(var i=0;i<name.length;i++){h=(h*31+name.charCodeAt(i))>>>0}return PALETTE[h%PALETTE.length]}
+function hexA(hex,a){return 'rgba('+parseInt(hex.slice(1,3),16)+','+parseInt(hex.slice(3,5),16)+','+parseInt(hex.slice(5,7),16)+','+a+')'}
+function projCell(name){
+  if(!name)return '<span class="pdot un"></span>未标记';
+  return '<span class="pdot" style="background:'+pColor(name)+'"></span>'+esc(name);
+}
 function fmtAge(ms){if(!(ms>=0))ms=0;var m=Math.floor(ms/60000);if(m<1)return '刚刚';var mi=m%60,h=Math.floor(m/60)%24,d=Math.floor(m/1440);if(d>0)return d+'天'+h+'时';if(h>0)return h+'时'+(mi?mi+'分':'');return m+'分'}
 function vWord(v){return {full:'卡已满',fragmented:'有空闲，但放不下队首',blocked:'有空闲，但未调度',absent:'集群没有这种资源',empty:'无排队'}[v]||v}
 function vState(v){return {full:'满',fragmented:'碎片化',blocked:'未调度',absent:'无此资源',empty:'—'}[v]||v}
@@ -159,7 +176,7 @@ function emptyMsg(){
 }
 function htmlCapacity(){
   if(STATE.resources.length===0)return emptyMsg();
-  var h='<div class="legend"><span><i class="sw b"></i>运行中（琥珀实心，对应「占用」）</span><span><i class="sw q"></i>排队（红斜纹，画在运行中之后，对应「需求」）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配</span></div>';
+  var h='<div class="legend"><span><i class="sw b"></i>运行中·未标记</span><span><i class="sw q"></i>排队·未标记</span><span><i class="sw pc"></i>项目色（运行中实心、排队同色斜纹）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配</span></div>';
   STATE.resources.forEach(function(res,ri){
     var alloc=res.allocatable,run=res.running,pend=res.pending;
     var fill=alloc>0?Math.min(100,run/alloc*100):(run>0?100:0);
@@ -169,12 +186,41 @@ function htmlCapacity(){
     var over=alloc>0&&demand>alloc?demand-alloc:0;
     var cells='';for(var c=0;c<24;c++)cells+='<i class="cell"></i>';
     var kind=res.unit!=='张'?'<span class="kind">（'+esc(res.unit)+'）</span>':'';
+    // Running and queued regions subdivide by project (ADR 0037); the
+    // unattributed remainder keeps the neutral amber / red hatch.
+    var segs='',cum=0,qcum=0;
+    (res.projects||[]).forEach(function(p){
+      if(run>0&&p.running>0){
+        var w=p.running/run*fill;
+        segs+='<div class="seg" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+(p.name?pColor(p.name):'#e2a23d')+'"></div>';
+        cum+=w;
+      }
+      if(qW>0&&p.pending>0){
+        var qw=p.pending/pend*qW;
+        var qc=p.name?pColor(p.name):'#e0564f';
+        segs+='<div class="seg" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)"></div>';
+        qcum+=qw;
+      }
+    });
+    // Donut: the running share by project, matching the 占用 number.
+    var plist=(res.projects||[]).filter(function(p){return p.running>0});
+    var pie='';
+    if(run>0&&plist.length){
+      var stops=[],pos=0;
+      plist.forEach(function(p){
+        var share=p.running/run,color=p.name?pColor(p.name):'#e2a23d';
+        stops.push(color+' '+(pos*100).toFixed(2)+'% '+((pos+share)*100).toFixed(2)+'%');
+        pos+=share;
+      });
+      var dtitle='项目占用（运行中）：'+plist.map(function(p){return (p.name||'未标记')+' '+fmtN(p.running)+' '+esc(res.unit)+'（'+fmtRatio(p.running/run)+'）'}).join('；');
+      pie='<div class="res-pie"><div class="donut" style="background:conic-gradient('+stops.join(',')+')" title="'+esc(dtitle)+'"><div class="hole"><b>'+fmtRatio(res.runRatio)+'</b><i>占用</i></div></div></div>';
+    }
     h+='<section class="res"><div class="res-head">'
       +'<div class="res-name" title="'+esc(res.name)+'">'+esc(res.name)+kind+'</div>'
-      +'<div class="strip'+(alloc<=0?' nores':'')+'" title="琥珀实心 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'）；红斜纹 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'；斜纹铺满右缘即需求超过可分配">'
-      +(fill>0?'<div class="fill" data-w="'+fill.toFixed(3)+'" style="width:0"></div>':'')
-      +(qW>0?'<div class="queue" data-w="'+qW.toFixed(3)+'" style="width:0;left:'+fill.toFixed(3)+'%"></div>':'')
+      +'<div class="strip'+(alloc<=0?' nores':'')+'" title="实心段 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'）；斜纹段 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'；斜纹铺满右缘即需求超过可分配">'
+      +segs
       +'<div class="cells">'+cells+'</div></div>'
+      +pie
       +'<div class="nums">'
       +'<span class="n"><i>总量</i><b>'+fmtN(res.total)+'</b></span>'
       +'<span class="n" title="占用 = 运行中 ÷ 可分配（与上方填充条一致）"><i>占用</i><b class="'+ratioCls(res.runRatio)+'">'+fmtRatio(res.runRatio)+'</b></span>'
@@ -184,6 +230,12 @@ function htmlCapacity(){
       +'<span class="n"><i>可分配</i><b>'+fmtN(alloc)+'</b></span>'
       +(over>0?'<span class="n" title="需求超出可分配的量 =（运行中+排队）− 可分配"><i>超配</i><b class="hot">+'+fmtN(over)+'</b></span>':'')
       +'</div></div>'
+      +'<details class="clusters" id="dp'+ri+'"'+(OPEN['dp'+ri]?' open':'')+'><summary>项目明细 · '+(res.projects||[]).length+'</summary><div class="scroll"><table>'
+      +'<thead><tr><th>项目</th><th>运行中</th><th>排队</th><th>需求</th><th>需求占比</th></tr></thead><tbody>'
+      +(res.projects||[]).map(function(p){
+        return '<tr><td>'+projCell(p.name)+'</td><td>'+fmtN(p.running)+'</td><td class="'+(p.pending>0?'hot':'')+'">'+fmtN(p.pending)+'</td><td>'+fmtN(p.running+p.pending)+'</td><td>'+fmtRatio(demand>0?(p.running+p.pending)/demand:0)+'</td></tr>';
+      }).join('')
+      +'</tbody></table></div></details>'
       +'<details class="clusters" id="dc'+ri+'"'+(OPEN['dc'+ri]?' open':'')+'><summary>集群明细 · '+res.clusters.length+'</summary><div class="scroll"><table>'
       +'<thead><tr><th>集群</th><th>总量</th><th>运行中</th><th>排队</th><th>可分配</th><th>空闲</th><th>空闲机器</th><th>单机最大空闲</th><th>状态</th></tr></thead><tbody>';
     res.clusters.forEach(function(c,ci){
@@ -224,13 +276,13 @@ function htmlQueue(){
       +'<div class="verdict '+c.verdict+'"><b>'+vWord(c.verdict)+'</b>'+esc(c.note)+'</div>';
     var rows='',ahead=0;
     c.queue.forEach(function(g){
-      if(q&&(g.namespace+' '+g.workload).toLowerCase().indexOf(q)<0){ahead+=g.demand;return}
-      if(q)MINE.push('「'+g.workload+'」在 '+name+' 排第 '+g.position+' 位，前方还需 '+fmtN(ahead)+' '+res.unit+'，已等待 '+(g.oldestSince?fmtAge(now()-g.oldestSince):'未知时长'));
-      rows+='<tr'+(q?' class="mine"':'')+'><td>#'+g.position+'</td><td data-since="'+g.oldestSince+'">'+(g.oldestSince?fmtAge(now()-g.oldestSince):'—')+'</td><td>'+esc(g.namespace)+'</td><td class="mono">'+esc(g.workload)+'</td><td>'+fmtN(g.demand)+'</td><td>'+(g.position===1?'—':fmtN(ahead))+'</td></tr>';
+      if(q&&(g.namespace+' '+g.workload+' '+(g.project||'')).toLowerCase().indexOf(q)<0){ahead+=g.demand;return}
+      if(q)MINE.push('「'+g.workload+'」在 '+name+' 排第 '+g.position+' 位（'+(g.project||'未标记')+'），前方还需 '+fmtN(ahead)+' '+res.unit+'，已等待 '+(g.oldestSince?fmtAge(now()-g.oldestSince):'未知时长'));
+      rows+='<tr'+(q?' class="mine"':'')+'><td>#'+g.position+'</td><td data-since="'+g.oldestSince+'">'+(g.oldestSince?fmtAge(now()-g.oldestSince):'—')+'</td><td>'+esc(g.namespace)+'</td><td class="mono">'+esc(g.workload)+'</td><td>'+projCell(g.project)+'</td><td>'+fmtN(g.demand)+'</td><td>'+(g.position===1?'—':fmtN(ahead))+'</td></tr>';
       ahead+=g.demand;
     });
-    if(q&&rows==='')rows='<tr><td colspan="6" class="none">没有匹配的任务</td></tr>';
-    h+='<div class="scroll"><table class="qt"><thead><tr><th>排位</th><th>已等待</th><th>命名空间</th><th>任务</th><th>需求（'+esc(res.unit)+'）</th><th>前方需求</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+    if(q&&rows==='')rows='<tr><td colspan="7" class="none">没有匹配的任务</td></tr>';
+    h+='<div class="scroll"><table class="qt"><thead><tr><th>排位</th><th>已等待</th><th>命名空间</th><th>任务</th><th>项目</th><th>需求（'+esc(res.unit)+'）</th><th>前方需求</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
     if(c.queue.length>0)h+='<p class="qinfo">'+fmtN(c.queue.length)+' 个任务在排队，共需 '+fmtN(c.pending)+' '+esc(res.unit)+'。</p>';
     h+='</section>';
   });

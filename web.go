@@ -147,10 +147,19 @@ type webQueueGroup struct {
 	Position    int     `json:"position"`
 	Namespace   string  `json:"namespace"`
 	Workload    string  `json:"workload"`
+	Project     string  `json:"project"`
 	Pods        int     `json:"pods"`
 	Demand      float64 `json:"demand"`
 	LargestPod  float64 `json:"largestPod"`
 	OldestSince int64   `json:"oldestSince"` // unix ms; 0 = unknown
+}
+
+// webProject is one project's demand for a resource (ADR 0037). Name "" is
+// the unattributed remainder.
+type webProject struct {
+	Name    string  `json:"name"`
+	Running float64 `json:"running"`
+	Pending float64 `json:"pending"`
 }
 
 // webClusterRes is one cluster's figures for one resource.
@@ -183,6 +192,7 @@ type webResource struct {
 	RunningRatio     float64         `json:"runRatio"` // 占用 running/allocatable; -1 unknown (ADR 0035)
 	CapOK            bool            `json:"capOK"`
 	PendingWorkloads int             `json:"pendingWorkloads"`
+	Projects         []webProject    `json:"projects"`
 	Clusters         []webClusterRes `json:"clusters"`
 }
 
@@ -228,8 +238,9 @@ func (a *webApp) state() webState {
 		rm.resource = r
 		rm.sortBy = 4 // name order, like the TUI aggregate context rows
 		rows := rm.rows()
-		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, RunningRatio: -1, Clusters: []webClusterRes{}}
+		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, RunningRatio: -1, Clusters: []webClusterRes{}, Projects: []webProject{}}
 		have := map[string]bool{}
+		projects := map[string]*webProject{}
 		for _, row := range rows {
 			have[row.key] = true
 			s := a.snaps[row.key]
@@ -243,6 +254,9 @@ func (a *webApp) state() webState {
 			if _, ok := s.Capacity[r]; !ok {
 				res.CapOK = false
 			}
+			// Project split mirrors the row sums exactly (offloaded pods
+			// excluded, label-derived running demand included — ADR 0037).
+			webSumProjects(s, r, projects)
 		}
 		// Clusters with zero allocatable capacity for the resource are kept
 		// out of the aggregates (ADR 0013), but queued demand on them gets
@@ -258,6 +272,19 @@ func (a *webApp) state() webState {
 				res.PendingWorkloads += len(cr.Queue)
 			}
 		}
+		for _, pr := range projects {
+			res.Projects = append(res.Projects, *pr)
+		}
+		// Demand first, then name; the unattributed "" sorts where its
+		// demand puts it, exactly like any project.
+		sort.Slice(res.Projects, func(i, j int) bool {
+			a, b := res.Projects[i], res.Projects[j]
+			ai, aj := a.Running+a.Pending, b.Running+b.Pending
+			if ai != aj {
+				return ai > aj
+			}
+			return a.Name < b.Name
+		})
 		if res.CapOK && res.Allocatable > 0 {
 			res.Ratio = (res.Running + res.Pending) / res.Allocatable
 			res.RunningRatio = res.Running / res.Allocatable
@@ -353,16 +380,41 @@ func webNodes(s snapshot, r corev1.ResourceName) []webNode {
 	return out
 }
 
+// webSumProjects accumulates per-project running and pending demand for a
+// resource from one snapshot, using the same pod filter as the row sums
+// (offloaded work excluded, ADRs 0031/0033).
+func webSumProjects(s snapshot, r corev1.ResourceName, into map[string]*webProject) {
+	for _, p := range s.Pods {
+		if p.Offloaded {
+			continue
+		}
+		q := webQty(r, p.Requests[r])
+		if q == 0 {
+			continue
+		}
+		pr := into[p.Project]
+		if pr == nil {
+			pr = &webProject{Name: p.Project}
+			into[p.Project] = pr
+		}
+		if p.Phase == corev1.PodPending {
+			pr.Pending += q
+		} else {
+			pr.Running += q
+		}
+	}
+}
+
 // webQueue groups a cluster's unscheduled demand for one resource by
 // workload and orders groups by their earliest pod creation time — the
 // honest approximation of a queue position, since Kubernetes itself may
 // reorder by priority or affinity. Unknown timestamps sort last.
 func webQueue(s snapshot, r corev1.ResourceName) []webQueueGroup {
 	type group struct {
-		namespace, workload string
-		pods                int
-		demand, largest     float64
-		oldest              time.Time
+		namespace, workload, project string
+		pods                         int
+		demand, largest              float64
+		oldest                       time.Time
 	}
 	groups := map[string]*group{}
 	for _, p := range s.Pods {
@@ -378,6 +430,9 @@ func webQueue(s snapshot, r corev1.ResourceName) []webQueueGroup {
 		if g == nil {
 			g = &group{namespace: p.Namespace, workload: p.Workload}
 			groups[key] = g
+		}
+		if g.project == "" {
+			g.project = p.Project // one workload, one project (ADR 0037)
 		}
 		g.pods++
 		d := webQty(r, request)
@@ -395,7 +450,7 @@ func webQueue(s snapshot, r corev1.ResourceName) []webQueueGroup {
 		if !g.oldest.IsZero() {
 			since = g.oldest.UnixMilli()
 		}
-		out = append(out, webQueueGroup{Namespace: g.namespace, Workload: g.workload, Pods: g.pods, Demand: g.demand, LargestPod: g.largest, OldestSince: since})
+		out = append(out, webQueueGroup{Namespace: g.namespace, Workload: g.workload, Project: g.project, Pods: g.pods, Demand: g.demand, LargestPod: g.largest, OldestSince: since})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		oi, oj := out[i].OldestSince, out[j].OldestSince

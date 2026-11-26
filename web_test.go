@@ -167,9 +167,54 @@ func TestWebStateJSONHasNoNullArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, bad := range []string{`"nodes":null`, `"clusters":null`, `"queue":null`, `"resources":null`} {
+	for _, bad := range []string{`"nodes":null`, `"clusters":null`, `"queue":null`, `"resources":null`, `"projects":null`} {
 		if strings.Contains(s, bad) {
 			t.Errorf("marshaled state contains %s; the page cannot render null arrays", bad)
 		}
+	}
+}
+
+func TestWebProjectAggregation(t *testing.T) {
+	r := corev1.ResourceName("huawei.com/ascend-1980")
+	now := time.Now()
+	app := &webApp{
+		targets: []target{{ID: "a", Path: "/kube/cn1.yaml", Context: "cn1"}},
+		snaps: map[string]snapshot{
+			"a": {Target: target{ID: "a", Path: "/kube/cn1.yaml", Context: "cn1"},
+				Capacity: qtys{r: qty(16)}, Total: qtys{r: qty(16)},
+				Nodes: []nodeInfo{{Name: "n1", Capacity: qtys{r: qty(16)}}},
+				Pods: []pod{
+					{Namespace: "arc", Name: "r1", Workload: "Pod/r1", Phase: corev1.PodRunning, NodeName: "n1", Project: "vllm-project/vllm-ascend", Requests: qtys{r: qty(8)}, CreatedAt: now.Add(-time.Hour)},
+					{Namespace: "arc", Name: "r2", Workload: "Pod/r2", Phase: corev1.PodPending, Project: "nv-action/vllm-benchmarks", Requests: qtys{r: qty(2)}, CreatedAt: now.Add(-time.Minute)},
+					{Namespace: "ml", Name: "w1", Workload: "LeaderWorkerSet/train", Phase: corev1.PodRunning, NodeName: "n1", Requests: qtys{r: qty(4)}, CreatedAt: now.Add(-2 * time.Hour)},
+					// Offloaded project pods are remote demand (ADRs 0031/0033).
+					{Namespace: "arc", Name: "off", Workload: "Pod/off", Phase: corev1.PodRunning, Offloaded: true, Project: "vllm-project/vllm-ascend", Requests: qtys{r: qty(2)}},
+				}},
+		},
+		resourceSelected: map[corev1.ResourceName]bool{r: true},
+		selected:         map[string]bool{"a": true},
+	}
+	st := app.state()
+	if len(st.Resources) != 1 {
+		t.Fatalf("want 1 resource, got %d", len(st.Resources))
+	}
+	res := st.Resources[0]
+	if res.Running != 12 || res.Pending != 2 {
+		t.Fatalf("running/pending = %v/%v, want 12/2 (offloaded excluded)", res.Running, res.Pending)
+	}
+	if len(res.Projects) != 3 {
+		t.Fatalf("want 3 project rows, got %+v", res.Projects)
+	}
+	if res.Projects[0].Name != "vllm-project/vllm-ascend" || res.Projects[0].Running != 8 || res.Projects[0].Pending != 0 {
+		t.Errorf("top project = %+v, want vllm-project/vllm-ascend running 8", res.Projects[0])
+	}
+	if res.Projects[1].Name != "" || res.Projects[1].Running != 4 {
+		t.Errorf("unattributed row = %+v, want running 4", res.Projects[1])
+	}
+	if res.Projects[2].Name != "nv-action/vllm-benchmarks" || res.Projects[2].Pending != 2 {
+		t.Errorf("queued project row = %+v, want nv-action/vllm-benchmarks pending 2", res.Projects[2])
+	}
+	if len(res.Clusters) != 1 || len(res.Clusters[0].Queue) != 1 || res.Clusters[0].Queue[0].Project != "nv-action/vllm-benchmarks" {
+		t.Fatalf("queue group must carry its project, got %+v", res.Clusters[0].Queue)
 	}
 }

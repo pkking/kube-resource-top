@@ -118,38 +118,58 @@ func TestPendingRequestStaysRawForMultipleClusterAliases(t *testing.T) {
 	}
 }
 
-func TestPendingNPURequestLabelsContributeDemand(t *testing.T) {
-	requests := pendingNPURequests(qtys{}, map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "1"})
+func TestNPURequestLabelsContributeDemand(t *testing.T) {
+	requests := npuLabelRequests(qtys{}, map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "1"})
 	quantity := requests[corev1.ResourceName("huawei.com/ascend-1980")]
 	if got := quantity.Value(); got != 1 {
 		t.Fatalf("request=%d", got)
 	}
 }
 
-func TestPendingNPURequestLabelsDoNotDoubleCountOrAcceptInvalidCounts(t *testing.T) {
+func TestNPURequestLabelsDoNotDoubleCountOrAcceptInvalidCounts(t *testing.T) {
 	resourceName := corev1.ResourceName("huawei.com/ascend-1980")
-	requests := pendingNPURequests(qtys{resourceName: resource.MustParse("2")}, map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "1"})
+	requests := npuLabelRequests(qtys{resourceName: resource.MustParse("2")}, map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "1"})
 	quantity := requests[resourceName]
 	if got := quantity.Value(); got != 2 {
 		t.Fatalf("request=%d", got)
 	}
-	requests = pendingNPURequests(qtys{}, map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "bad"})
+	requests = npuLabelRequests(qtys{}, map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "bad"})
 	if len(requests) != 0 {
 		t.Fatalf("invalid count added request: %#v", requests)
 	}
 }
 
-func TestWatchStateTracksOnlyScheduledDemand(t *testing.T) {
+func TestProjectOfLabels(t *testing.T) {
+	cases := []struct {
+		labels map[string]string
+		want   string
+	}{
+		{map[string]string{"actions.github.com/organization": "nv-action", "actions.github.com/repository": "vllm-benchmarks"}, "nv-action/vllm-benchmarks"},
+		{map[string]string{"actions.github.com/repository": "triton-ascend"}, "triton-ascend"},
+		{map[string]string{"actions.github.com/organization": "nv-action"}, ""},
+		{map[string]string{}, ""},
+	}
+	for _, c := range cases {
+		if got := projectOfLabels(c.labels); got != c.want {
+			t.Errorf("projectOfLabels(%v) = %q, want %q", c.labels, got, c.want)
+		}
+	}
+}
+
+func TestWatchStateTracksScheduledPhasesAndLabelDemand(t *testing.T) {
 	s := &watchState{pods: map[string]pod{}, nodes: map[string]corev1.Node{}}
 	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "done"}, Status: corev1.PodStatus{Phase: corev1.PodSucceeded}})
-	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "running", Labels: map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "1"}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}}}}}})
+	s.setPod(&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "n", Name: "running", Labels: map[string]string{"ascend-ci.com/npu-resource-model": "ascend-1980", "ascend-ci.com/required-npu-count": "1", "actions.github.com/organization": "vllm-project", "actions.github.com/repository": "vllm-ascend"}}, Status: corev1.PodStatus{Phase: corev1.PodRunning}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}}}}}})
 	snapshot := s.snapshot()
 	if got := len(snapshot.Pods); got != 1 {
-		t.Fatalf("pods=%d, want 1", got)
+		t.Fatalf("pods=%d, want 1 (Succeeded excluded)", got)
 	}
 	quantity := snapshot.Pods[0].Requests[corev1.ResourceName("huawei.com/ascend-1980")]
-	if !quantity.IsZero() {
-		t.Fatal("Running Pod must not use Pending-only labels")
+	if got := quantity.Value(); got != 1 {
+		t.Fatal("Running ARC runner with empty scheduler requests must still count its label-declared cards (ADR 0037)")
+	}
+	if got := snapshot.Pods[0].Project; got != "vllm-project/vllm-ascend" {
+		t.Fatalf("project=%q, want vllm-project/vllm-ascend", got)
 	}
 }
 

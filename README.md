@@ -31,8 +31,8 @@ go run . --web 0.0.0.0:8080 --kubeconfig-dir /path/to/kubeconfigs
 
 The page (Chinese UI) serves two audiences as two tabs:
 
-- **资源总览 (capacity)**: one chip strip per resource type showing total, occupancy (req/alloc), running, pending, and allocatable in ADR 0029's order, expandable to per-cluster and per-node tables.
-- **排队进度 (queue)**: per cluster, pending workloads ordered by creation time with queue position, wait age, and demand still ahead, plus a saturation verdict — full / fragmented (free cards exist but no single node fits the head pod) / blocked / cluster has none of this resource. No ETA is fabricated; judge from the head's wait and the free capacity.
+- **资源总览 (capacity)**: one chip strip per resource type showing total, occupancy (req/alloc), running, pending, and allocatable in ADR 0029's order, expandable to per-cluster and per-node tables. Running and queued regions subdivide by project — read from the GitHub ARC runner labels `actions.github.com/organization`/`repository` on the pods (ADR 0037) — and a donut shows each project's running share; the `ascend-ci.com` NPU labels now count as running demand too, because ARC runner pods hold cards while their scheduler requests are empty.
+- **排队进度 (queue)**: per cluster, pending workloads ordered by creation time with queue position, wait age, and demand still ahead, plus a saturation verdict — full / fragmented (free cards exist but no single node fits the head pod) / blocked / cluster has none of this resource. No ETA is fabricated; judge from the head's wait and the free capacity. Queue rows carry the project.
 
 Cluster state still comes exclusively from the Kubernetes Watch; the browser polls `/api/state.json` every 5 s as a view refresh only. Target selection and alias editing remain in the TUI.
 

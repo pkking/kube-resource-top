@@ -129,14 +129,19 @@ func (s *watchState) setPod(p *corev1.Pod) {
 		return
 	}
 	requests := podQuantities(*p, false)
-	if p.Status.Phase == corev1.PodPending {
-		requests = pendingNPURequests(requests, p.Labels)
-	}
+	// The ascend-ci labels express device demand that scheduler requests do
+	// not carry — observed on ARC runner pods at both phases (ADR 0037).
+	requests = npuLabelRequests(requests, p.Labels)
 	// Workload attribution resolves at snapshot time: owner objects may
 	// arrive after their pods, and late arrivals re-notify.
-	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, CreatedAt: p.CreationTimestamp.Time}
+	s.pods[key] = pod{Namespace: p.Namespace, Name: p.Name, UID: string(p.UID), NodeName: p.Spec.NodeName, Phase: p.Status.Phase, OwnerRefs: p.OwnerReferences, Requests: requests, Limits: podQuantities(*p, true), Annotations: p.Annotations, Project: projectOfLabels(p.Labels), CreatedAt: p.CreationTimestamp.Time}
 }
-func pendingNPURequests(requests qtys, labels map[string]string) qtys {
+
+// npuLabelRequests adds the label-derived extended-resource request
+// (ADR 0015) at any phase, keeping max(label, scheduler request) so the
+// same demand never counts twice. Running ARC runners hold cards while
+// their scheduler requests are empty (ADR 0037).
+func npuLabelRequests(requests qtys, labels map[string]string) qtys {
 	model := labels["ascend-ci.com/npu-resource-model"]
 	count, err := strconv.ParseInt(labels["ascend-ci.com/required-npu-count"], 10, 64)
 	if model == "" || err != nil || count < 1 {
@@ -152,6 +157,21 @@ func pendingNPURequests(requests qtys, labels map[string]string) qtys {
 		requests[resourceName] = labelQuantity
 	}
 	return requests
+}
+
+// projectOfLabels reads the GitHub ARC runner project identity from the
+// pod's own labels (ADR 0037): organization/repository when both exist,
+// the repository alone otherwise. The labels survive Liqo ShadowPod
+// reflection, so offloaded runners keep their project at the provider.
+func projectOfLabels(labels map[string]string) string {
+	repo := labels["actions.github.com/repository"]
+	if repo == "" {
+		return ""
+	}
+	if org := labels["actions.github.com/organization"]; org != "" {
+		return org + "/" + repo
+	}
+	return repo
 }
 func (s *watchState) deletePod(v interface{}) {
 	s.mu.Lock()

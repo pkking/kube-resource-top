@@ -66,7 +66,9 @@ type pod struct {
 	OwnerRefs                                []metav1.OwnerReference
 	Requests, Limits, Usage                  qtys
 	Annotations                              map[string]string
-	CreatedAt                                time.Time
+	// Project is the runner's repository identity (ADR 0037); "" = unattributed.
+	Project   string
+	CreatedAt time.Time
 }
 type qtys map[corev1.ResourceName]resource.Quantity
 
