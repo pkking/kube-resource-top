@@ -52,12 +52,21 @@ main{min-height:180px}
 .seg{position:absolute;top:0;bottom:0;transition:width .6s ease;border-right:1px solid rgba(11,16,23,.9)}
 .strip.nores .cell{border-style:dashed}
 .res-pie{grid-column:3;grid-row:1/3;align-self:center;justify-self:center}
-.donut{width:88px;height:88px;border-radius:50%;position:relative}
-.donut .hole{position:absolute;inset:17px;border-radius:50%;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.2}
-.donut .hole b{font-family:var(--mono);font-size:14px;color:var(--ink)}
-.donut .hole i{font-style:normal;font-size:11px;color:var(--dim)}
+.donutwrap{position:relative;width:88px;height:88px}
+.donut{display:block;width:88px;height:88px}
+.hole{position:absolute;inset:17px;border-radius:50%;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1.2}
+.hole b{font-family:var(--mono);font-size:14px;color:var(--ink)}
+.hole i{font-style:normal;font-size:11px;color:var(--dim)}
 .pdot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:8px;vertical-align:-1px}
 .pdot.un{background:var(--busy)}
+.projrow{display:flex;flex-wrap:wrap;gap:4px 18px;margin:7px 0 0;font-size:12.5px}
+.pl{color:var(--dim);white-space:nowrap}
+.pl b{font-family:var(--mono);font-weight:600;color:var(--ink);margin-left:5px}
+.pl i{font-style:normal;font-family:var(--mono);color:var(--full);margin-left:4px}
+.sumblock{border:1px solid var(--line);border-radius:4px;padding:12px 16px 14px;margin:12px 0 18px;background:var(--panel)}
+.sumblock .res-head{margin-top:10px}
+.sumsel{margin:0}
+.sel-label{color:var(--dim);font-size:12.5px;align-self:center;margin-right:2px}
 .nums{color:var(--dim);font-size:13px;display:flex;flex-wrap:wrap;gap:2px 20px}
 .nums .n i{font-style:normal;margin-right:6px}
 .nums .n b{font-family:var(--mono);font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
@@ -143,7 +152,7 @@ footer .err{color:var(--full)}
 <footer id="foot"></footer>
 </div>
 <script>
-var STATE=null,FETCH_AT=0,LAST_SIG=null,RENDERED=false,TAB='capacity',QRES=null,QUERY='',MINE=[],OPEN={};
+var STATE=null,FETCH_AT=0,LAST_SIG=null,RENDERED=false,TAB='capacity',QRES=null,QUERY='',MINE=[],OPEN={},SUMSEL=null;
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function now(){return STATE?STATE.nowMs+(Date.now()-FETCH_AT):Date.now()}
@@ -174,66 +183,130 @@ function emptyMsg(){
   if(STATE.live===0)return '<div class="connecting">正在连接集群，等待第一批快照…</div>';
   return '<div class="connecting">暂无资源数据：集群还没有上报可分配资源。</div>';
 }
+// stripAndPie builds the project-segmented meter and the donut for any
+// resource-shaped figures (real or aggregated). Every color segment carries
+// its own tooltip (ADR 0038).
+function stripAndPie(res){
+  var alloc=res.allocatable,run=res.running,pend=res.pending;
+  var fill=alloc>0?Math.min(100,run/alloc*100):(run>0?100:0);
+  var demand=run+pend;
+  var demandEnd=alloc>0?Math.min(100,demand/alloc*100):(pend>0?100:0);
+  var qW=Math.max(0,demandEnd-fill);
+  var over=alloc>0&&demand>alloc?demand-alloc:0;
+  var segs='',cum=0,qcum=0;
+  (res.projects||[]).forEach(function(p){
+    if(run>0&&p.running>0){
+      var w=p.running/run*fill;
+      segs+='<div class="seg" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+(p.name?pColor(p.name):'#e2a23d')+'" title="'+esc(p.name||'未标记')+'：运行中 '+fmtN(p.running)+' '+esc(res.unit)+'（占运行中 '+fmtRatio(run>0?p.running/run:0)+'）"></div>';
+      cum+=w;
+    }
+    if(qW>0&&p.pending>0){
+      var qw=p.pending/pend*qW;
+      var qc=p.name?pColor(p.name):'#e0564f';
+      segs+='<div class="seg" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)" title="'+esc(p.name||'未标记')+'：排队 '+fmtN(p.pending)+' '+esc(res.unit)+'"></div>';
+      qcum+=qw;
+    }
+  });
+  var cells='';for(var c=0;c<24;c++)cells+='<i class="cell"></i>';
+  var strip='<div class="strip'+(alloc<=0?' nores':'')+'" title="实心段 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'）；斜纹段 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'；斜纹铺满右缘即需求超过可分配">'+segs+'<div class="cells">'+cells+'</div></div>';
+  var plist=(res.projects||[]).filter(function(p){return p.running>0});
+  var pie=(run>0&&plist.length)?donutSVG(res,plist):'';
+  return {strip:strip,pie:pie,over:over};
+}
+// donutSVG draws the running share as an SVG ring so each sector carries
+// its own <title> tooltip (ADR 0038).
+function donutSVG(res,plist){
+  var run=res.running,parts='',pos=-0.25;
+  plist.forEach(function(p){
+    var share=p.running/run;
+    if(share<=0)return;
+    var color=p.name?pColor(p.name):'#e2a23d';
+    var t=esc((p.name||'未标记')+'：运行 '+fmtN(p.running)+' '+res.unit+'（占运行中 '+fmtRatio(share)+'）');
+    if(share>=0.99999){parts+='<circle cx="44" cy="44" r="44" fill="'+color+'"><title>'+t+'</title></circle>';return}
+    var a0=pos*2*Math.PI,a1=(pos+share)*2*Math.PI;
+    parts+='<path d="'+arcPath(44,44,17,a0,a1)+'" fill="'+color+'"><title>'+t+'</title></path>';
+    pos+=share;
+  });
+  return '<div class="res-pie"><div class="donutwrap"><svg class="donut" viewBox="0 0 88 88" role="img" aria-label="项目占用环形图">'+parts+'</svg><div class="hole"><b>'+fmtRatio(res.runRatio)+'</b><i>占用</i></div></div></div>';
+}
+function arcPath(cx,R,r,a0,a1){
+  function pt(rad,ang){return (cx+rad*Math.cos(ang)).toFixed(2)+','+(cx+rad*Math.sin(ang)).toFixed(2)}
+  var big=(a1-a0)>Math.PI?1:0;
+  return 'M'+pt(R,a0)+' A'+R+','+R+' 0 '+big+' 1 '+pt(R,a1)+' L'+pt(r,a1)+' A'+r+','+r+' 0 '+big+' 0 '+pt(r,a0)+' Z';
+}
+function numsFor(res,over){
+  return '<div class="nums">'
+    +'<span class="n"><i>总量</i><b>'+fmtN(res.total)+'</b></span>'
+    +'<span class="n" title="占用 = 运行中 ÷ 可分配（与实心段一致）"><i>占用</i><b class="'+ratioCls(res.runRatio)+'">'+fmtRatio(res.runRatio)+'</b></span>'
+    +'<span class="n" title="需求 =（运行中 + 排队）÷ 可分配，规划口径（ADR 0028）"><i>需求</i><b class="'+ratioCls(res.ratio)+'">'+fmtRatio(res.ratio)+'</b></span>'
+    +'<span class="n"><i>运行中</i><b>'+fmtN(res.running)+'</b></span>'
+    +'<span class="n"><i>排队</i><b class="'+(res.pending>0?'hot':'')+'">'+fmtN(res.pending)+'</b></span>'
+    +'<span class="n"><i>可分配</i><b>'+fmtN(res.allocatable)+'</b></span>'
+    +(over>0?'<span class="n" title="需求超出可分配的量 =（运行中+排队）− 可分配"><i>超配</i><b class="hot">+'+fmtN(over)+'</b></span>':'')
+    +'</div>';
+}
+// projRow is the explicit per-resource project legend (ADR 0038).
+function projRow(res){
+  var ps=(res.projects||[]).filter(function(p){return p.running+p.pending>0});
+  if(!ps.length)return '';
+  return '<div class="projrow">'+ps.map(function(p){
+    return '<span class="pl" title="'+esc(p.name||'未标记')+'：运行 '+fmtN(p.running)+' '+esc(res.unit)+'，排队 '+fmtN(p.pending)+' '+esc(res.unit)+'">'+projCell(p.name)+'<b>'+fmtN(p.running)+'</b>'+(p.pending>0?'<i>+'+fmtN(p.pending)+'</i>':'')+'</span>';
+  }).join('')+'</div>';
+}
+// sumAggregate combines the reader's selected resource types at display
+// time (ADR 0038); per-resource accounting stays untouched.
+function sumAggregate(){
+  var rs=STATE.resources;
+  if(rs.length<2)return null;
+  if(!SUMSEL){SUMSEL={}}
+  rs.forEach(function(r){if(!(r.name in SUMSEL))SUMSEL[r.name]=true});
+  var units={},t=0,alloc=0,run=0,pend=0,pm={};
+  rs.forEach(function(r){
+    if(!SUMSEL[r.name])return;
+    units[r.unit]=1;
+    t+=r.total;alloc+=r.allocatable;run+=r.running;pend+=r.pending;
+    (r.projects||[]).forEach(function(p){
+      var k=p.name||'',e=pm[k]||(pm[k]={name:k,running:0,pending:0});
+      e.running+=p.running;e.pending+=p.pending;
+    });
+  });
+  var projs=[];for(var k in pm)projs.push(pm[k]);
+  projs.sort(function(a,b){var x=a.running+a.pending,y=b.running+b.pending;return x!==y?y-x:(a.name<b.name?-1:1)});
+  var unit=Object.keys(units).length===1?Object.keys(units)[0]:'';
+  return {name:'汇总',unit:unit,total:t,allocatable:alloc,running:run,pending:pend,projects:projs,
+    runRatio:alloc>0?run/alloc:-1,ratio:alloc>0?(run+pend)/alloc:-1};
+}
+function summaryPanel(){
+  var sum=sumAggregate();
+  if(!sum)return '';
+  var sp=stripAndPie(sum);
+  var chips='<div class="chips sumsel"><span class="sel-label">计入汇总：</span>'+STATE.resources.map(function(r){
+    return '<button class="chip'+(SUMSEL[r.name]?' on':'')+'" data-sum="'+esc(r.name)+'">'+esc(r.name)+'</button>';
+  }).join('')+'<button class="chip" data-sumall="1">全选</button><button class="chip" data-sumall="0">清空</button></div>';
+  return '<section class="res sumblock">'+chips
+    +'<div class="res-head"><div class="res-name" title="选中资源类型的合计占用；不同单位的资源按原始数值相加">汇总</div>'
+    +sp.strip+sp.pie+numsFor(sum,sp.over)+'</div>'
+    +projRow(sum)
+    +'</section>';
+}
 function htmlCapacity(){
   if(STATE.resources.length===0)return emptyMsg();
-  var h='<div class="legend"><span><i class="sw b"></i>运行中·未标记</span><span><i class="sw q"></i>排队·未标记</span><span><i class="sw pc"></i>项目色（运行中实心、排队同色斜纹）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配</span></div>';
+  var h='<div class="legend"><span><i class="sw b"></i>运行中·未标记</span><span><i class="sw q"></i>排队·未标记</span><span><i class="sw pc"></i>项目色（运行中实心、排队同色斜纹）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配；色段与环形图悬停有各项目明细</span></div>';
+  h+=summaryPanel();
   STATE.resources.forEach(function(res,ri){
-    var alloc=res.allocatable,run=res.running,pend=res.pending;
-    var fill=alloc>0?Math.min(100,run/alloc*100):(run>0?100:0);
-    var demand=run+pend;
-    var demandEnd=alloc>0?Math.min(100,demand/alloc*100):(pend>0?100:0);
-    var qW=Math.max(0,demandEnd-fill);
-    var over=alloc>0&&demand>alloc?demand-alloc:0;
-    var cells='';for(var c=0;c<24;c++)cells+='<i class="cell"></i>';
+    var sp=stripAndPie(res);
     var kind=res.unit!=='张'?'<span class="kind">（'+esc(res.unit)+'）</span>':'';
-    // Running and queued regions subdivide by project (ADR 0037); the
-    // unattributed remainder keeps the neutral amber / red hatch.
-    var segs='',cum=0,qcum=0;
-    (res.projects||[]).forEach(function(p){
-      if(run>0&&p.running>0){
-        var w=p.running/run*fill;
-        segs+='<div class="seg" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+(p.name?pColor(p.name):'#e2a23d')+'"></div>';
-        cum+=w;
-      }
-      if(qW>0&&p.pending>0){
-        var qw=p.pending/pend*qW;
-        var qc=p.name?pColor(p.name):'#e0564f';
-        segs+='<div class="seg" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)"></div>';
-        qcum+=qw;
-      }
-    });
-    // Donut: the running share by project, matching the 占用 number.
-    var plist=(res.projects||[]).filter(function(p){return p.running>0});
-    var pie='';
-    if(run>0&&plist.length){
-      var stops=[],pos=0;
-      plist.forEach(function(p){
-        var share=p.running/run,color=p.name?pColor(p.name):'#e2a23d';
-        stops.push(color+' '+(pos*100).toFixed(2)+'% '+((pos+share)*100).toFixed(2)+'%');
-        pos+=share;
-      });
-      var dtitle='项目占用（运行中）：'+plist.map(function(p){return (p.name||'未标记')+' '+fmtN(p.running)+' '+esc(res.unit)+'（'+fmtRatio(p.running/run)+'）'}).join('；');
-      pie='<div class="res-pie"><div class="donut" style="background:conic-gradient('+stops.join(',')+')" title="'+esc(dtitle)+'"><div class="hole"><b>'+fmtRatio(res.runRatio)+'</b><i>占用</i></div></div></div>';
-    }
     h+='<section class="res"><div class="res-head">'
       +'<div class="res-name" title="'+esc(res.name)+'">'+esc(res.name)+kind+'</div>'
-      +'<div class="strip'+(alloc<=0?' nores':'')+'" title="实心段 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'）；斜纹段 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'；斜纹铺满右缘即需求超过可分配">'
-      +segs
-      +'<div class="cells">'+cells+'</div></div>'
-      +pie
-      +'<div class="nums">'
-      +'<span class="n"><i>总量</i><b>'+fmtN(res.total)+'</b></span>'
-      +'<span class="n" title="占用 = 运行中 ÷ 可分配（与上方填充条一致）"><i>占用</i><b class="'+ratioCls(res.runRatio)+'">'+fmtRatio(res.runRatio)+'</b></span>'
-      +'<span class="n" title="需求 =（运行中 + 排队）÷ 可分配，规划口径（ADR 0028），与红色需求线一致"><i>需求</i><b class="'+ratioCls(res.ratio)+'">'+fmtRatio(res.ratio)+'</b></span>'
-      +'<span class="n"><i>运行中</i><b>'+fmtN(run)+'</b></span>'
-      +'<span class="n"><i>排队</i><b class="'+(pend>0?'hot':'')+'">'+fmtN(pend)+'</b></span>'
-      +'<span class="n"><i>可分配</i><b>'+fmtN(alloc)+'</b></span>'
-      +(over>0?'<span class="n" title="需求超出可分配的量 =（运行中+排队）− 可分配"><i>超配</i><b class="hot">+'+fmtN(over)+'</b></span>':'')
-      +'</div></div>'
+      +sp.strip
+      +sp.pie
+      +numsFor(res,sp.over)
+      +'</div>'
+      +projRow(res)
       +'<details class="clusters" id="dp'+ri+'"'+(OPEN['dp'+ri]?' open':'')+'><summary>项目明细 · '+(res.projects||[]).length+'</summary><div class="scroll"><table>'
       +'<thead><tr><th>项目</th><th>运行中</th><th>排队</th><th>需求</th><th>需求占比</th></tr></thead><tbody>'
       +(res.projects||[]).map(function(p){
-        return '<tr><td>'+projCell(p.name)+'</td><td>'+fmtN(p.running)+'</td><td class="'+(p.pending>0?'hot':'')+'">'+fmtN(p.pending)+'</td><td>'+fmtN(p.running+p.pending)+'</td><td>'+fmtRatio(demand>0?(p.running+p.pending)/demand:0)+'</td></tr>';
+        return '<tr><td>'+projCell(p.name)+'</td><td>'+fmtN(p.running)+'</td><td class="'+(p.pending>0?'hot':'')+'">'+fmtN(p.pending)+'</td><td>'+fmtN(p.running+p.pending)+'</td><td>'+fmtRatio(res.running+res.pending>0?(p.running+p.pending)/(res.running+res.pending):0)+'</td></tr>';
       }).join('')
       +'</tbody></table></div></details>'
       +'<details class="clusters" id="dc'+ri+'"'+(OPEN['dc'+ri]?' open':'')+'><summary>集群明细 · '+res.clusters.length+'</summary><div class="scroll"><table>'
@@ -354,7 +427,18 @@ $('tab-capacity').onclick=function(){TAB='capacity';syncTabs();render()};
 $('tab-queue').onclick=function(){TAB='queue';syncTabs();render()};
 $('main').addEventListener('click',function(e){
   var b=e.target.closest?e.target.closest('.chip'):null;
-  if(b){QRES=b.getAttribute('data-res');render()}
+  if(!b)return;
+  if(b.hasAttribute('data-sum')){
+    var n=b.getAttribute('data-sum');
+    SUMSEL[n]=!SUMSEL[n];
+    render();return;
+  }
+  if(b.hasAttribute('data-sumall')){
+    var v=b.getAttribute('data-sumall')==='1';
+    for(var k in SUMSEL)SUMSEL[k]=v;
+    render();return;
+  }
+  QRES=b.getAttribute('data-res');render();
 });
 $('main').addEventListener('input',function(e){
   if(e.target&&e.target.id==='qsearch'){
