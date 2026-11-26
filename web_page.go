@@ -40,7 +40,7 @@ main{min-height:180px}
 .sw{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;border-radius:2px}
 .sw.b{background:var(--busy)}
 .sw.q{background:repeating-linear-gradient(45deg,rgba(224,86,79,.6) 0 2px,transparent 2px 5px)}
-.sw.pc{background:#4cb8d9}
+.sw.pc{background:#4ea1ff}
 .sw.f{border:1px solid #3a4c63}
 .res{border-bottom:1px solid var(--line);padding:16px 0 12px}
 .res-head{display:grid;grid-template-columns:240px 1fr 122px;gap:0 24px}
@@ -50,6 +50,7 @@ main{min-height:180px}
 .strip .cells{position:absolute;inset:0;display:flex;gap:2px}
 .strip .cell{flex:1;border:1px solid #223043;border-radius:2px}
 .seg{position:absolute;top:0;bottom:0;transition:width .6s ease;border-right:1px solid rgba(11,16,23,.9)}
+.seg.zseg{border-left:2px solid rgba(11,16,23,.95)}
 .strip.nores .cell{border-style:dashed}
 .res-pie{grid-column:3;grid-row:1/3;align-self:center;justify-self:center}
 .donutwrap{position:relative;width:88px;height:88px}
@@ -165,9 +166,13 @@ function now(){return STATE?STATE.nowMs+(Date.now()-FETCH_AT):Date.now()}
 function fmtN(v){if(!isFinite(v))return '—';var r=Math.round(v*10)/10;return r.toLocaleString('zh-CN')}
 function fmtRatio(v){if(!(v>=0))return '—';return Math.round(v*100)+'%'}
 function ratioCls(v){return v>=1?'hot':(v>=0.8?'warn':'')}
-// Project palette (ADR 0037): hues deliberately distinct from the reserved
-// state colors (amber/red/green). A project keeps its color across views.
-var PALETTE=['#4cb8d9','#5b8ee6','#9a7fe0','#c77bd9','#d97bb8','#a3c94d','#6fd0c0','#c98f6a'];
+// Project palette (ADRs 0037/0043): ten colors ordered so palette
+// neighbors — which name hashes can hand to adjacent zones — always jump
+// hue family or lightness, and none collides with the reserved semantic
+// tones (unattributed amber #e2a23d, queue red #e0564f, table green
+// #39c97e). The three blue-family entries separate by lightness.
+// Hash assignment keeps a project's color stable across views/reloads.
+var PALETTE=['#3d7bff','#ff6fa3','#a06bff','#b8e04a','#d95fe8','#2ec5d8','#ff9edb','#35d0a0','#c9a0ff','#8d9bff'];
 function hashStr(s){var h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0}return h}
 function pColor(name){return PALETTE[hashStr(name)%PALETTE.length]}
 function hexA(hex,a){return 'rgba('+parseInt(hex.slice(1,3),16)+','+parseInt(hex.slice(3,5),16)+','+parseInt(hex.slice(5,7),16)+','+a+')'}
@@ -220,12 +225,12 @@ function stripAndPie(res){
       var restRun=0,restN=list.length-shown.length;
       list.slice(8).forEach(function(t){restRun+=t.run});
       if(restN>0)shown=shown.concat([{run:restRun,workload:'__rest__',cluster:'',restN:restN}]);
-      shown.forEach(function(t){
+      shown.forEach(function(t,i){
         var w=t.run/run*fill;
         var tt=t.workload==='__rest__'
           ?'其他 '+t.restN+' 个任务，共 '+fmtN(t.run)+' '+esc(res.unit)+'（'+zname+'）'
           :'任务 '+esc(t.workload)+'（'+zname+'，'+esc(cname(t.cluster))+'）：运行 '+fmtN(t.run)+' '+esc(res.unit);
-        segs+='<div class="seg" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+color+'" title="'+tt+'"></div>';
+        segs+='<div class="seg'+(i===0?' zseg':'')+'" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+color+'" title="'+tt+'"></div>';
         cum+=w;
       });
     }
@@ -241,12 +246,12 @@ function stripAndPie(res){
       var qrest=0,qrestN=qlist.length-qshown.length;
       qlist.slice(6).forEach(function(g){qrest+=g.demand});
       if(qrestN>0)qshown=qshown.concat([{workload:'__rest__',demand:qrest,cluster:'',restN:qrestN}]);
-      qshown.forEach(function(g){
+      qshown.forEach(function(g,i){
         var qw=g.demand/pend*qW;
         var tt=g.workload==='__rest__'
           ?'其他 '+g.restN+' 个排队任务，共 '+fmtN(g.demand)+' '+esc(res.unit)+'（'+zname+'）'
           :'任务 '+esc(g.workload)+'（'+zname+'，'+esc(cname(g.cluster))+'）：排队 '+fmtN(g.demand)+' '+esc(res.unit);
-        segs+='<div class="seg" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)" title="'+tt+'"></div>';
+        segs+='<div class="seg'+(i===0?' zseg':'')+'" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)" title="'+tt+'"></div>';
         qcum+=qw;
       });
     }
@@ -266,9 +271,9 @@ function donutSVG(res,plist){
     if(share<=0)return;
     var color=p.name?pColor(p.name):'#e2a23d';
     var t=esc((p.name||'未标记')+'：运行 '+fmtN(p.running)+' '+res.unit+'（占运行中 '+fmtRatio(share)+'）');
-    if(share>=0.99999){parts+='<circle cx="44" cy="44" r="44" fill="'+color+'"><title>'+t+'</title></circle>';return}
+    if(share>=0.99999){parts+='<circle cx="44" cy="44" r="44" fill="'+color+'" stroke="#0b1017" stroke-width="1.5"><title>'+t+'</title></circle>';return}
     var a0=pos*2*Math.PI,a1=(pos+share)*2*Math.PI;
-    parts+='<path d="'+arcPath(44,44,17,a0,a1)+'" fill="'+color+'"><title>'+t+'</title></path>';
+    parts+='<path d="'+arcPath(44,44,17,a0,a1)+'" fill="'+color+'" stroke="#0b1017" stroke-width="1.5"><title>'+t+'</title></path>';
     pos+=share;
   });
   return '<div class="res-pie"><div class="donutwrap"><svg class="donut" viewBox="0 0 88 88" role="img" aria-label="项目占用环形图">'+parts+'</svg><div class="hole"><b>'+fmtRatio(res.runRatio)+'</b><i>占用</i></div></div></div>';
