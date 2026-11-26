@@ -167,7 +167,7 @@ func TestWebStateJSONHasNoNullArrays(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := string(b)
-	for _, bad := range []string{`"nodes":null`, `"clusters":null`, `"queue":null`, `"resources":null`, `"projects":null`} {
+	for _, bad := range []string{`"nodes":null`, `"clusters":null`, `"queue":null`, `"resources":null`, `"projects":null`, `"tasks":null`} {
 		if strings.Contains(s, bad) {
 			t.Errorf("marshaled state contains %s; the page cannot render null arrays", bad)
 		}
@@ -216,5 +216,44 @@ func TestWebProjectAggregation(t *testing.T) {
 	}
 	if len(res.Clusters) != 1 || len(res.Clusters[0].Queue) != 1 || res.Clusters[0].Queue[0].Project != "nv-action/vllm-benchmarks" {
 		t.Fatalf("queue group must carry its project, got %+v", res.Clusters[0].Queue)
+	}
+}
+
+func TestWebTaskAggregation(t *testing.T) {
+	r := corev1.ResourceName("huawei.com/ascend-910b")
+	now := time.Now()
+	app := &webApp{
+		targets: []target{{ID: "a", Path: "/kube/cn1.yaml", Context: "cn1"}},
+		snaps: map[string]snapshot{
+			"a": {Target: target{ID: "a", Path: "/kube/cn1.yaml", Context: "cn1"},
+				Capacity: qtys{r: qty(16)}, Total: qtys{r: qty(16)},
+				Nodes: []nodeInfo{{Name: "n1", Capacity: qtys{r: qty(16)}}},
+				Pods: []pod{
+					// Two pods of one workload roll into one summed task.
+					{Namespace: "arc", Name: "r1", Workload: "Pod/r1", Phase: corev1.PodRunning, NodeName: "n1", Project: "sgl-project/sglang", Requests: qtys{r: qty(2)}, CreatedAt: now},
+					{Namespace: "arc", Name: "r1b", Workload: "Pod/r1", Phase: corev1.PodRunning, NodeName: "n1", Project: "sgl-project/sglang", Requests: qtys{r: qty(2)}, CreatedAt: now},
+					{Namespace: "ml", Name: "w1", Workload: "LeaderWorkerSet/train", Phase: corev1.PodRunning, NodeName: "n1", Requests: qtys{r: qty(4)}, CreatedAt: now},
+					// Pending pods never enter the running task list.
+					{Namespace: "arc", Name: "p1", Workload: "Job/wait", Phase: corev1.PodPending, Project: "nv-action/vllm-benchmarks", Requests: qtys{r: qty(2)}, CreatedAt: now},
+					// Offloaded work is remote demand (ADRs 0031/0033).
+					{Namespace: "arc", Name: "off", Workload: "Pod/off", Phase: corev1.PodRunning, Offloaded: true, Project: "sgl-project/sglang", Requests: qtys{r: qty(8)}},
+				}},
+		},
+		resourceSelected: map[corev1.ResourceName]bool{r: true},
+		selected:         map[string]bool{"a": true},
+	}
+	st := app.state()
+	res := st.Resources[0]
+	if len(res.Tasks) != 2 {
+		t.Fatalf("want 2 running tasks, got %+v", res.Tasks)
+	}
+	if res.Tasks[0].Workload != "LeaderWorkerSet/train" || res.Tasks[0].Run != 4 || res.Tasks[0].Project != "" || res.Tasks[0].Cluster != "a" {
+		t.Errorf("task 0 = %+v, want LeaderWorkerSet/train run 4 unattributed", res.Tasks[0])
+	}
+	if res.Tasks[1].Workload != "Pod/r1" || res.Tasks[1].Run != 4 || res.Tasks[1].Project != "sgl-project/sglang" {
+		t.Errorf("task 1 = %+v, want Pod/r1 run 4 (pods summed)", res.Tasks[1])
+	}
+	if res.Running != 8 {
+		t.Errorf("running = %v, want 8 (task sums must equal the row sums)", res.Running)
 	}
 }

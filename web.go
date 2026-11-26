@@ -222,6 +222,15 @@ type webClusterRes struct {
 	Note        string          `json:"note"`
 }
 
+// webTask is one workload's running demand for a resource (ADR 0042),
+// unaggregated — the page owns the per-zone display policy.
+type webTask struct {
+	Cluster  string  `json:"cluster"` // target ID; the page maps it to a name
+	Workload string  `json:"workload"`
+	Project  string  `json:"project"`
+	Run      float64 `json:"run"`
+}
+
 // webResource is the cross-cluster aggregate for one resource type.
 type webResource struct {
 	Name             string          `json:"name"`
@@ -235,6 +244,7 @@ type webResource struct {
 	CapOK            bool            `json:"capOK"`
 	PendingWorkloads int             `json:"pendingWorkloads"`
 	Projects         []webProject    `json:"projects"`
+	Tasks            []webTask       `json:"tasks"`
 	Clusters         []webClusterRes `json:"clusters"`
 }
 
@@ -280,9 +290,10 @@ func (a *webApp) state() webState {
 		rm.resource = r
 		rm.sortBy = 4 // name order, like the TUI aggregate context rows
 		rows := rm.rows()
-		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, RunningRatio: -1, Clusters: []webClusterRes{}, Projects: []webProject{}}
+		res := webResource{Name: string(r), Unit: webUnit(r), CapOK: true, Ratio: -1, RunningRatio: -1, Clusters: []webClusterRes{}, Projects: []webProject{}, Tasks: []webTask{}}
 		have := map[string]bool{}
 		projects := map[string]*webProject{}
+		tasks := map[string]*webTask{}
 		for _, row := range rows {
 			have[row.key] = true
 			s := a.snaps[row.key]
@@ -299,6 +310,9 @@ func (a *webApp) state() webState {
 			// Project split mirrors the row sums exactly (offloaded pods
 			// excluded, label-derived running demand included — ADR 0037).
 			webSumProjects(s, r, projects)
+			// Running tasks at workload granularity for the strip blocks
+			// (ADR 0042), same pod filter as the sums.
+			webSumTasks(s, r, row.key, tasks)
 		}
 		// Clusters with zero allocatable capacity for the resource are kept
 		// out of the aggregates (ADR 0013), but queued demand on them gets
@@ -316,6 +330,21 @@ func (a *webApp) state() webState {
 		}
 		for _, pr := range projects {
 			res.Projects = append(res.Projects, *pr)
+		}
+		for _, t := range tasks {
+			res.Tasks = append(res.Tasks, *t)
+		}
+		// Task order: demand first, then names — deterministic files and
+		// tests; the page regroups into project zones anyway.
+		sort.Slice(res.Tasks, func(i, j int) bool {
+			a, b := res.Tasks[i], res.Tasks[j]
+			if a.Run != b.Run {
+				return a.Run > b.Run
+			}
+			return a.Cluster+"\x00"+a.Workload < b.Cluster+"\x00"+b.Workload
+		})
+		if res.Tasks == nil {
+			res.Tasks = []webTask{}
 		}
 		// Demand first, then name; the unattributed "" sorts where its
 		// demand puts it, exactly like any project.
@@ -468,6 +497,27 @@ func webSumProjects(s snapshot, r corev1.ResourceName, into map[string]*webProje
 		} else {
 			pr.Running += q
 		}
+	}
+}
+
+// webSumTasks accumulates running demand per (workload, project) from one
+// snapshot (ADR 0042), using the same pod filter as the row sums.
+func webSumTasks(s snapshot, r corev1.ResourceName, clusterID string, into map[string]*webTask) {
+	for _, p := range s.Pods {
+		if p.Offloaded || p.Phase != corev1.PodRunning {
+			continue
+		}
+		q := webQty(r, p.Requests[r])
+		if q == 0 {
+			continue
+		}
+		key := p.Workload + "\x00" + p.Project
+		t := into[key]
+		if t == nil {
+			t = &webTask{Cluster: clusterID, Workload: p.Workload, Project: p.Project}
+			into[key] = t
+		}
+		t.Run += q
 	}
 }
 

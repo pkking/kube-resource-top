@@ -200,22 +200,59 @@ function stripAndPie(res){
   var demandEnd=alloc>0?Math.min(100,demand/alloc*100):(pend>0?100:0);
   var qW=Math.max(0,demandEnd-fill);
   var over=alloc>0&&demand>alloc?demand-alloc:0;
+  // Task blocks inside project zones (ADR 0042): zone widths stay the
+  // project view; each zone subdivides into its actual workloads.
   var segs='',cum=0,qcum=0;
+  var byProjTask={};
+  (res.tasks||[]).forEach(function(t){
+    var k=t.project||'';
+    (byProjTask[k]=byProjTask[k]||[]).push(t);
+  });
   (res.projects||[]).forEach(function(p){
+    var pk=p.name||'';
+    var color=p.name?pColor(p.name):'#e2a23d';
+    var qc=p.name?pColor(p.name):'#e0564f';
+    var zname=p.name||'未标记';
     if(run>0&&p.running>0){
-      var w=p.running/run*fill;
-      segs+='<div class="seg" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+(p.name?pColor(p.name):'#e2a23d')+'" title="'+esc(p.name||'未标记')+'：运行中 '+fmtN(p.running)+' '+esc(res.unit)+'（占运行中 '+fmtRatio(run>0?p.running/run:0)+'）"></div>';
-      cum+=w;
+      var list=(byProjTask[pk]||[]).slice().sort(function(a,b){return b.run-a.run});
+      if(!list.length)list=[{run:p.running,workload:'',cluster:''}];
+      var shown=list.slice(0,8);
+      var restRun=0,restN=list.length-shown.length;
+      list.slice(8).forEach(function(t){restRun+=t.run});
+      if(restN>0)shown=shown.concat([{run:restRun,workload:'__rest__',cluster:'',restN:restN}]);
+      shown.forEach(function(t){
+        var w=t.run/run*fill;
+        var tt=t.workload==='__rest__'
+          ?'其他 '+t.restN+' 个任务，共 '+fmtN(t.run)+' '+esc(res.unit)+'（'+zname+'）'
+          :'任务 '+esc(t.workload)+'（'+zname+'，'+esc(cname(t.cluster))+'）：运行 '+fmtN(t.run)+' '+esc(res.unit);
+        segs+='<div class="seg" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+color+'" title="'+tt+'"></div>';
+        cum+=w;
+      });
     }
     if(qW>0&&p.pending>0){
-      var qw=p.pending/pend*qW;
-      var qc=p.name?pColor(p.name):'#e0564f';
-      segs+='<div class="seg" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)" title="'+esc(p.name||'未标记')+'：排队 '+fmtN(p.pending)+' '+esc(res.unit)+'"></div>';
-      qcum+=qw;
+      var qlist=[];
+      (res.clusters||[]).forEach(function(c){
+        (c.queue||[]).forEach(function(g){
+          if((g.project||'')===pk)qlist.push({workload:g.workload,demand:g.demand,cluster:c.cluster});
+        });
+      });
+      qlist.sort(function(a,b){return b.demand-a.demand});
+      var qshown=qlist.slice(0,6);
+      var qrest=0,qrestN=qlist.length-qshown.length;
+      qlist.slice(6).forEach(function(g){qrest+=g.demand});
+      if(qrestN>0)qshown=qshown.concat([{workload:'__rest__',demand:qrest,cluster:'',restN:qrestN}]);
+      qshown.forEach(function(g){
+        var qw=g.demand/pend*qW;
+        var tt=g.workload==='__rest__'
+          ?'其他 '+g.restN+' 个排队任务，共 '+fmtN(g.demand)+' '+esc(res.unit)+'（'+zname+'）'
+          :'任务 '+esc(g.workload)+'（'+zname+'，'+esc(cname(g.cluster))+'）：排队 '+fmtN(g.demand)+' '+esc(res.unit);
+        segs+='<div class="seg" data-w="'+qw.toFixed(3)+'" style="width:0;left:'+(fill+qcum).toFixed(3)+'%;background:repeating-linear-gradient(45deg,'+hexA(qc,.6)+' 0 4px,transparent 4px 9px)" title="'+tt+'"></div>';
+        qcum+=qw;
+      });
     }
   });
   var cells='';for(var c=0;c<24;c++)cells+='<i class="cell"></i>';
-  var strip='<div class="strip'+(alloc<=0?' nores':'')+'" title="实心段 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'）；斜纹段 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'；斜纹铺满右缘即需求超过可分配">'+segs+'<div class="cells">'+cells+'</div></div>';
+  var strip='<div class="strip'+(alloc<=0?' nores':'')+'" title="实心段 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'），每块一个任务，悬停看任务/项目/集群；斜纹段 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'，同样按任务分块；斜纹铺满右缘即需求超过可分配">'+segs+'<div class="cells">'+cells+'</div></div>';
   var plist=(res.projects||[]).filter(function(p){return p.running>0});
   var pie=(run>0&&plist.length)?donutSVG(res,plist):'';
   return {strip:strip,pie:pie,over:over};
@@ -319,7 +356,7 @@ function summaryPanel(){
 }
 function htmlCapacity(){
   if(STATE.resources.length===0)return emptyMsg();
-  var h='<div class="legend"><span><i class="sw b"></i>运行中·未标记</span><span><i class="sw q"></i>排队·未标记</span><span><i class="sw pc"></i>项目色（运行中实心、排队同色斜纹）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配；色段与环形图悬停有各项目明细</span></div>';
+  var h='<div class="legend"><span><i class="sw b"></i>运行中·未标记</span><span><i class="sw q"></i>排队·未标记</span><span><i class="sw pc"></i>项目色区（区内每块一个任务，悬停看任务/项目/集群）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配</span></div>';
   h+=summaryPanel();
   STATE.resources.forEach(function(res,ri){
     var sp=stripAndPie(res);
