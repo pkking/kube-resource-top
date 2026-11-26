@@ -112,6 +112,9 @@ td.none{text-align:center;color:var(--dim)}
 #qsearch{background:var(--panel);border:1px solid var(--line);border-radius:3px;color:var(--ink);font:inherit;padding:7px 12px;width:320px;max-width:100%}
 #qsearch:focus{outline:none;border-color:var(--gold)}
 .mline{color:var(--dim);font-size:13px}
+.hchart svg{display:block;width:100%;height:auto}
+.hchart text{font-size:10px;font-family:var(--mono)}
+.histread{min-height:20px;color:var(--dim);font-size:12.5px;margin-top:6px;font-family:var(--mono);word-break:break-all}
 .qsec{border-top:1px solid var(--line);margin-top:14px;padding-top:4px}
 .qsec h2{font-size:15px;font-weight:600;margin:10px 0 8px}
 .qsec h2 .abs{color:var(--dim);font-size:12.5px;font-weight:400;margin-left:10px}
@@ -149,12 +152,13 @@ footer .err{color:var(--full)}
 <nav class="tabs">
   <button id="tab-capacity" role="tab" aria-selected="true">资源总览</button>
   <button id="tab-queue" role="tab" aria-selected="false">排队进度</button>
+  <button id="tab-history" role="tab" aria-selected="false">历史回看</button>
 </nav>
 <main id="main"><div class="connecting">正在连接集群，等待第一批快照…</div></main>
 <footer id="foot"></footer>
 </div>
 <script>
-var STATE=null,FETCH_AT=0,LAST_SIG=null,RENDERED=false,TAB='capacity',QRES=null,QUERY='',MINE=[],OPEN={},SUMSEL=null;
+var STATE=null,FETCH_AT=0,LAST_SIG=null,RENDERED=false,TAB='capacity',QRES=null,QUERY='',MINE=[],OPEN={},SUMSEL=null,HIST={res:null,cluster:'all',hours:24,data:null,err:''};
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
 function now(){return STATE?STATE.nowMs+(Date.now()-FETCH_AT):Date.now()}
@@ -164,7 +168,8 @@ function ratioCls(v){return v>=1?'hot':(v>=0.8?'warn':'')}
 // Project palette (ADR 0037): hues deliberately distinct from the reserved
 // state colors (amber/red/green). A project keeps its color across views.
 var PALETTE=['#4cb8d9','#5b8ee6','#9a7fe0','#c77bd9','#d97bb8','#a3c94d','#6fd0c0','#c98f6a'];
-function pColor(name){var h=0;for(var i=0;i<name.length;i++){h=(h*31+name.charCodeAt(i))>>>0}return PALETTE[h%PALETTE.length]}
+function hashStr(s){var h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0}return h}
+function pColor(name){return PALETTE[hashStr(name)%PALETTE.length]}
 function hexA(hex,a){return 'rgba('+parseInt(hex.slice(1,3),16)+','+parseInt(hex.slice(3,5),16)+','+parseInt(hex.slice(5,7),16)+','+a+')'}
 function projCell(name){
   if(!name)return '<span class="pdot un"></span>未标记';
@@ -385,9 +390,169 @@ function htmlQueue(){
   if(q&&MINE.length===0)MINE.push('没有找到匹配「'+esc(QUERY.trim())+'」的任务');
   return h;
 }
+// fetchHist loads the downsampled occupancy series for the current
+// history controls and re-renders on completion (ADR 0040).
+function fetchHist(){
+  if(!HIST.res)return render();
+  HIST.data=null;HIST.err='';
+  var url='/api/history.json?res='+encodeURIComponent(HIST.res)+'&cluster='+encodeURIComponent(HIST.cluster)+'&hours='+HIST.hours;
+  fetch(url,{cache:'no-store'}).then(function(r){return r.text()}).then(function(t){
+    var s;
+    try{s=JSON.parse(t)}catch(e){HIST.err='历史数据解析失败';return render()}
+    if(s&&s.error){HIST.err=s.error;HIST.data=null}
+    else{HIST.data=s;HIST.err=''}
+    render();
+  }).catch(function(){HIST.err='历史数据读取失败';render()});
+}
+function htmlHistory(){
+  if(STATE.resources.length===0)return emptyMsg();
+  if(!HIST.res){
+    var first=null;
+    STATE.resources.forEach(function(r){if(!first&&r.pending>0)first=r});
+    HIST.res=(first||STATE.resources[0]).name;
+  }
+  var h='<div class="chips">'+STATE.resources.map(function(r){
+    return '<button class="chip'+(r.name===HIST.res?' on':'')+'" data-hres="'+esc(r.name)+'">'+esc(r.name)+'</button>';
+  }).join('')+'</div>';
+  h+='<div class="chips"><span class="sel-label">集群：</span><button class="chip'+(HIST.cluster==='all'?' on':'')+'" data-hcl="all">全部</button>'
+    +STATE.clusters.filter(function(c){return !c.err}).map(function(c){
+      return '<button class="chip'+(HIST.cluster===c.name?' on':'')+'" data-hcl="'+esc(c.name)+'" title="'+esc(c.id)+'">'+esc(c.name)+'</button>';
+    }).join('')+'</div>';
+  var ranges=[[6,'6 小时'],[24,'24 小时'],[72,'3 天'],[168,'7 天'],[720,'30 天']];
+  h+='<div class="chips"><span class="sel-label">时间范围：</span>'+ranges.map(function(rr){
+    return '<button class="chip'+(HIST.hours===rr[0]?' on':'')+'" data-hh="'+rr[0]+'">'+rr[1]+'</button>';
+  }).join('')+'</div>';
+  if(HIST.err)h+='<div class="connecting">'+esc(HIST.err)+'</div>';
+  else if(!HIST.data)h+='<div class="connecting">正在读取历史数据…</div>';
+  else if(!HIST.data.points||!HIST.data.points.length)h+='<div class="connecting">这段时间内没有该资源的历史记录。</div>';
+  else h+=histChart()+histLegend();
+  h+='<p class="qinfo">历史为采样值（默认每分钟记录一次），悬停图表查看各时间点明细；采样粒度之内的瞬时波动不可见。</p>';
+  return h;
+}
+// histChart draws the stacked SVG: solid areas = running by project,
+// hatched areas on top = pending, dashed line = allocatable (ADR 0040).
+function histChart(){
+  var pts=HIST.data.points,W=1000,H=300,L=48,Rm=14,T=14,B=26;
+  var pw=W-L-Rm,ph=H-T-B;
+  var t0=pts[0].at,t1=pts[pts.length-1].at;
+  if(t1<=t0)t1=t0+1;
+  var ymax=1;
+  pts.forEach(function(p){ymax=Math.max(ymax,p.A||0,(p.R||0)+(p.P||0))});
+  ymax*=1.08;
+  function X(t){return (L+(t-t0)/(t1-t0)*pw).toFixed(1)}
+  function Y(v){return (T+ph-(v/ymax)*ph).toFixed(1)}
+  var names={};
+  pts.forEach(function(p){(p.p||[]).forEach(function(q){names[q.n||'']=1})});
+  var order=Object.keys(names).sort();
+  var byName={};
+  pts.forEach(function(p){
+    (p.p||[]).forEach(function(q){byName[q.n||'']=byName[q.n||'']||{};byName[q.n||''][p.at]={r:q.r,q:q.q}});
+  });
+  var runM=[],pendM=[],defs='',layers='';
+  var runTop=[],pendTop=[];
+  pts.forEach(function(p){
+    runTop.push(p.R||0);pendTop.push((p.R||0)+(p.P||0));
+  });
+  order.forEach(function(n,pi){
+    var runs=[],pends=[];
+    pts.forEach(function(p){
+      var e=byName[n][p.at];
+      runs.push(e?e.r:0);pends.push(e?e.q:0);
+    });
+    var rc=[],pc=[];
+    pts.forEach(function(p,i){
+      var runBase=pi>0?runM[pi-1][i]:0;
+      var pendBase=pi>0?pendM[pi-1][i]:(p.R||0);
+      rc.push(runBase+runs[i]);pc.push(pendBase+pends[i]);
+    });
+    runM[pi]=rc;pendM[pi]=pc;
+    var color=n?pColor(n):'#e2a23d';
+    var qcolor=n?pColor(n):'#e0564f';
+    defs+='<pattern id="hp'+hashStr(n)+'" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="'+qcolor+'" stroke-width="2.5" opacity="0.55"/></pattern>';
+    layers+=areaPath(pts,rc,pi>0?runM[pi-1]:null,X,Y,'fill:'+color+';stroke:none','run');
+    layers+=areaPath(pts,pc,pi>0?pendM[pi-1]:runTop.map(function(v){return v}),X,Y,'fill:url(#hp'+hashStr(n)+');stroke:none','pend');
+  });
+  // reference lines and axes
+  var grid='',ylab='',ylabN=4;
+  for(var i=0;i<=ylabN;i++){
+    var v=ymax*i/ylabN;
+    var y=Y(v);
+    grid+='<line x1="'+L+'" y1="'+y+'" x2="'+(W-Rm)+'" y2="'+y+'" stroke="#1d2b3c" stroke-width="1"/>';
+    ylab+='<text x="'+(L-6)+'" y="'+(+y+4)+'" text-anchor="end" fill="#8290a3">'+fmtN(v)+'</text>';
+  }
+  var xlab='',xtN=6;
+  for(var i=0;i<=xtN;i++){
+    var t=t0+(t1-t0)*i/xtN;
+    var d=new Date(t);
+    var lab=HIST.hours<=48?d.toLocaleTimeString('zh-CN',{hour12:false,hour:'2-digit',minute:'2-digit'}):(d.getMonth()+1)+'-'+d.getDate();
+    xlab+='<text x="'+X(t)+'" y="'+(H-8)+'" text-anchor="middle" fill="#8290a3">'+esc(lab)+'</text>';
+    grid+='<line x1="'+X(t)+'" y1="'+T+'" x2="'+X(t)+'" y2="'+(T+ph)+'" stroke="#141d29" stroke-width="1"/>';
+  }
+  var alloc='',ax=pts.map(function(p){return X(p.at)+','+Y(p.A||0)});
+  if(pts.some(function(p){return p.A>0}))alloc='<polyline points="'+ax.join(' ')+'" fill="none" stroke="#8290a3" stroke-width="1.2" stroke-dasharray="5 4"><title>可分配</title></polyline>';
+  var demand='<polyline points="'+pendTop.map(function(v,i){return X(pts[i].at)+','+Y(v)}).join(' ')+'" fill="none" stroke="#e0564f" stroke-width="1.4"><title>需求（运行中+排队）</title></polyline>';
+  return '<div class="hchart"><svg viewBox="0 0 '+W+' '+H+'" role="img" aria-label="占用历史">'
+    +'<defs>'+defs+'</defs>'+grid+ylab+xlab+layers+alloc+demand
+    +'<line id="histcur" x1="0" y1="'+T+'" x2="0" y2="'+(T+ph)+'" stroke="#d2a44e" stroke-width="1" opacity="0"/>'
+    +'<rect id="histov" x="'+L+'" y="'+T+'" width="'+pw+'" height="'+ph+'" fill="transparent"/>'
+    +'</svg><div class="histread" id="histread"> </div></div>';
+}
+function areaPath(pts,top,bot,X,Y,style,cls){
+  var d='M'+X(pts[0].at)+','+Y(top[0]);
+  for(var i=1;i<pts.length;i++)d+=' L'+X(pts[i].at)+','+Y(top[i]);
+  if(bot){
+    for(var i=pts.length-1;i>=0;i--)d+=' L'+X(pts[i].at)+','+Y(bot[i]);
+  }else{
+    var base=Y(0);
+    d+=' L'+X(pts[pts.length-1].at)+','+base+' L'+X(pts[0].at)+','+base;
+  }
+  return '<path d="'+d+' Z" style="'+style+'" class="'+cls+'"/>';
+}
+function histLegend(){
+  var pts=HIST.data.points,last=pts[pts.length-1];
+  var names={};
+  pts.forEach(function(p){(p.p||[]).forEach(function(q){names[q.n||'']=1})});
+  var unit=(STATE.resources.filter(function(r){return r.name===HIST.res})[0]||{}).unit||'';
+  var h='<div class="projrow">'+Object.keys(names).sort().map(function(n){
+    var color=n?pColor(n):'#e2a23d';
+    return '<span class="pl">'+(n?'<span class="pdot" style="background:'+color+'"></span>':'<span class="pdot un"></span>')+esc(n||'未标记')+'</span>';
+  }).join('')+'<span class="pl"><span class="pdot" style="background:repeating-linear-gradient(45deg,rgba(224,86,79,.6) 0 2px,transparent 2px 5px)"></span>排队</span><span class="pl">— 可分配（'+fmtN(last.A)+' '+esc(unit)+'）</span></div>';
+  return h;
+}
+// attachHistHover wires the chart's crosshair: nearest-point readout with
+// the project breakdown, driven by mouse position in viewBox coordinates.
+function attachHistHover(){
+  var ov=$('histov'),cur=$('histcur');
+  if(!ov||!cur||!HIST.data||!HIST.data.points||!HIST.data.points.length)return;
+  var pts=HIST.data.points,t0=pts[0].at,t1=pts[pts.length-1].at;
+  if(t1<=t0)t1=t0+1;
+  var L=48,Rm=14,W=1000,pw=W-L-Rm;
+  var unit=(STATE.resources.filter(function(r){return r.name===HIST.res})[0]||{}).unit||'';
+  ov.onmousemove=function(e){
+    var r=ov.getBoundingClientRect();
+    var vx=L+(e.clientX-r.left)/r.width*pw;
+    var t=t0+(vx-L)/pw*(t1-t0);
+    var best=0,bd=Infinity;
+    for(var i=0;i<pts.length;i++){
+      var d=Math.abs(pts[i].at-t);
+      if(d<bd){bd=d;best=i}
+    }
+    var p=pts[best];
+    cur.setAttribute('x1',String(L+(p.at-t0)/(t1-t0)*pw));
+    cur.setAttribute('x2',String(L+(p.at-t0)/(t1-t0)*pw));
+    cur.setAttribute('opacity','0.8');
+    var ps=(p.p||[]).slice().sort(function(a,b){return (b.r+b.q)-(a.r+a.q)});
+    var projTxt=ps.slice(0,4).map(function(x){return (x.n||'未标记')+' '+fmtN(x.r)+'/'+fmtN(x.q)}).join('、')+(ps.length>4?'；等 '+ps.length+' 项':'');
+    $('histread').innerHTML=new Date(p.at).toLocaleString('zh-CN',{hour12:false})+' · 运行 '+fmtN(p.R)+' · 排队 '+fmtN(p.P)+' · 需求 '+fmtN((p.R||0)+(p.P||0))+' · 可分配 '+fmtN(p.A)+(unit?' '+esc(unit):'')+(projTxt?' — '+esc(projTxt):'');
+  };
+  ov.onmouseleave=function(){
+    cur.setAttribute('opacity','0');
+    $('histread').textContent=' ';
+  };
+}
 function render(){
   var main=$('main');
-  var html=TAB==='capacity'?htmlCapacity():htmlQueue();
+  var html=TAB==='capacity'?htmlCapacity():(TAB==='queue'?htmlQueue():htmlHistory());
   if(RENDERED)main.classList.add('noanim');
   main.innerHTML=html;
   var els=main.querySelectorAll('[data-w]');
@@ -401,6 +566,7 @@ function render(){
   if(TAB==='queue'&&$('mline')){
     $('mline').textContent=MINE.slice(0,3).join('；')+(MINE.length>3?'；等 '+MINE.length+' 条':'');
   }
+  if(TAB==='history')attachHistHover();
   renderFoot();
   tickAges();
 }
@@ -432,7 +598,11 @@ function poll(){
     updateLive();
     var sig=JSON.stringify(s,function(k,v){return (k==='at'||k==='nowMs')?0:v});
     if(sig===LAST_SIG)return;
-    try{render();LAST_SIG=sig}
+    LAST_SIG=sig;
+    // The history tab owns its own fetch cycle: live polls never rebuild
+    // the chart out from under the user's hover.
+    if(TAB==='history')return;
+    try{render()}
     catch(e){
       // A failed render must never wedge the page on the connecting screen:
       // show the error and force the next poll to retry even if the data
@@ -445,12 +615,17 @@ function poll(){
 function syncTabs(){
   $('tab-capacity').setAttribute('aria-selected',TAB==='capacity');
   $('tab-queue').setAttribute('aria-selected',TAB==='queue');
+  $('tab-history').setAttribute('aria-selected',TAB==='history');
 }
 $('tab-capacity').onclick=function(){TAB='capacity';syncTabs();render()};
 $('tab-queue').onclick=function(){TAB='queue';syncTabs();render()};
+$('tab-history').onclick=function(){TAB='history';syncTabs();render();fetchHist()};
 $('main').addEventListener('click',function(e){
   var b=e.target.closest?e.target.closest('.chip'):null;
   if(!b)return;
+  if(b.hasAttribute('data-hres')){HIST.res=b.getAttribute('data-hres');fetchHist();return}
+  if(b.hasAttribute('data-hcl')){HIST.cluster=b.getAttribute('data-hcl');fetchHist();return}
+  if(b.hasAttribute('data-hh')){HIST.hours=+b.getAttribute('data-hh');fetchHist();return}
   if(b.hasAttribute('data-sum')){
     var n=b.getAttribute('data-sum');
     SUMSEL[n]=!SUMSEL[n];

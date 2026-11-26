@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -31,13 +32,14 @@ type webApp struct {
 	aliases          []aliasRule
 	resourceSelected map[corev1.ResourceName]bool
 	selected         map[string]bool
+	rec              *webRecorder
 }
 
 // runWeb replaces the TUI with the dashboard server. Discovery, config, and
 // target selection follow the same rules as main(); there is no interactive
 // selector, so the persisted selection is used as saved and unreachable
 // clusters surface through their snapshot errors.
-func runWeb(addr, dir, configPath string) error {
+func runWeb(addr, dir, configPath string, rec *webRecorder) error {
 	targets, _, err := discover(dir)
 	if err != nil {
 		return err
@@ -61,7 +63,7 @@ func runWeb(addr, dir, configPath string) error {
 	for _, rule := range cfg.Aliases { // mirrors model.selectAliases
 		resources[corev1.ResourceName(rule.Alias)] = true
 	}
-	app := &webApp{snaps: map[string]snapshot{}, targets: targets, aliases: cfg.Aliases, resourceSelected: resources, selected: selected}
+	app := &webApp{snaps: map[string]snapshot{}, targets: targets, aliases: cfg.Aliases, resourceSelected: resources, selected: selected, rec: rec}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	updates := make(chan resultMsg, 1)
@@ -82,8 +84,12 @@ func runWeb(addr, dir, configPath string) error {
 			}
 		}
 	}()
+	if rec != nil {
+		go rec.run(ctx, app)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state.json", app.handleState)
+	mux.HandleFunc("/api/history.json", app.handleHistory)
 	mux.HandleFunc("/", app.handlePage)
 	srv := &http.Server{Addr: addr, Handler: mux}
 	errc := make(chan error, 1)
@@ -123,6 +129,41 @@ func (a *webApp) handleState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_ = json.NewEncoder(w).Encode(st)
+}
+
+// handleHistory serves downsampled occupancy history for one resource and
+// one cluster (or all) from the JSONL days (ADR 0040).
+func (a *webApp) handleHistory(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if a.rec == nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "历史记录未启用：请用 --web-record <目录> 启动 kube-resource-top"})
+		return
+	}
+	q := r.URL.Query()
+	resource := q.Get("res")
+	cluster := q.Get("cluster")
+	if cluster == "" {
+		cluster = "all"
+	}
+	hours, err := strconv.ParseFloat(q.Get("hours"), 64)
+	if err != nil || hours < 1 {
+		hours = 24
+	}
+	if hours > 24*31 {
+		hours = 24 * 31
+	}
+	now := time.Now()
+	points, err := readHistory(a.rec.dir, resource, cluster, now.Add(-time.Duration(hours*float64(time.Hour))), now, 288)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+		return
+	}
+	_ = json.NewEncoder(w).Encode(struct {
+		Resource string      `json:"resource"`
+		Cluster  string      `json:"cluster"`
+		Points   []histPoint `json:"points"`
+	}{resource, cluster, points})
 }
 
 // webClusterMeta is the cluster list at the top of the state.
@@ -176,6 +217,7 @@ type webClusterRes struct {
 	Absent      bool            `json:"absent"`
 	Nodes       []webNode       `json:"nodes"`
 	Queue       []webQueueGroup `json:"queue"`
+	Projects    []webProject    `json:"projects"`
 	Verdict     string          `json:"verdict"` // full|fragmented|blocked|absent|empty
 	Note        string          `json:"note"`
 }
@@ -332,9 +374,33 @@ func newWebClusterRes(s snapshot, r corev1.ResourceName, row row, absent bool) w
 		}
 	}
 	cr.Queue = webQueue(s, r)
+	cr.Projects = webProjects(s, r)
 	cr.Absent = absent
 	cr.Verdict, cr.Note = webVerdict(r, cr)
 	return cr
+}
+
+// webProjects aggregates one snapshot's per-project demand for a resource
+// (offloaded pods excluded), sorted by demand then name.
+func webProjects(s snapshot, r corev1.ResourceName) []webProject {
+	into := map[string]*webProject{}
+	webSumProjects(s, r, into)
+	var out []webProject
+	for _, p := range into {
+		out = append(out, *p)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		ai, aj := a.Running+a.Pending, b.Running+b.Pending
+		if ai != aj {
+			return ai > aj
+		}
+		return a.Name < b.Name
+	})
+	if out == nil {
+		out = []webProject{} // never null (the page indexes .length)
+	}
+	return out
 }
 
 // snapshotDemand sums pod requests for r over pending or running pods,

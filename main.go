@@ -135,6 +135,9 @@ func main() {
 	testTimeout := flag.Duration("test-timeout", 3*time.Second, "per-context timeout for -t")
 	testConcurrency := flag.Int("test-concurrency", 8, "parallel context checks for -t")
 	webAddr := flag.String("web", "", "serve a read-only web dashboard at this address instead of the TUI (e.g. 0.0.0.0:8080)")
+	webRecord := flag.String("web-record", "", "record occupancy history as JSONL into this directory (enables the history view; requires --web)")
+	webRecordInterval := flag.Duration("web-record-interval", time.Minute, "occupancy sampling interval for --web-record")
+	webRecordKeep := flag.Int("web-record-keep", 30, "days of history files to keep")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "--kubeconfig-dir is required")
@@ -144,7 +147,11 @@ func main() {
 		os.Exit(testKubeconfigs(*dir, *testTimeout, *testConcurrency))
 	}
 	if *webAddr != "" {
-		if err := runWeb(*webAddr, *dir, *configPath); err != nil {
+		var rec *webRecorder
+		if *webRecord != "" {
+			rec = newWebRecorder(*webRecord, *webRecordInterval, *webRecordKeep)
+		}
+		if err := runWeb(*webAddr, *dir, *configPath, rec); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
