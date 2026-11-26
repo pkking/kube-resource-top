@@ -106,6 +106,8 @@ td.none{text-align:center;color:var(--dim)}
 .chip .st.full{background:var(--full)}
 .chip b{font-family:var(--mono);font-weight:600;color:var(--dim)}
 .chip.on b{color:var(--ink)}
+.chip.series{border-style:dashed}
+.chip.series.on{border-style:solid;border-color:var(--gold);color:var(--gold)}
 .searchrow{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:12px 0 6px}
 #qsearch{background:var(--panel);border:1px solid var(--line);border-radius:3px;color:var(--ink);font:inherit;padding:7px 12px;width:320px;max-width:100%}
 #qsearch:focus{outline:none;border-color:var(--gold)}
@@ -276,11 +278,32 @@ function sumAggregate(){
   return {name:'汇总',unit:unit,total:t,allocatable:alloc,running:run,pending:pend,projects:projs,
     runRatio:alloc>0?run/alloc:-1,ratio:alloc>0?(run+pend)/alloc:-1};
 }
+// seriesKey derives a hardware series from a resource name (ADR 0039):
+// everything up to the last letter-or-dash that directly precedes the
+// terminal variant. 910B1 → 910B, 910C560T → 910C.
+function seriesKey(name){
+  var m=/^(.*?[A-Za-z-])(\d.*)$/.exec(name);
+  return m?m[1]:'';
+}
 function summaryPanel(){
   var sum=sumAggregate();
   if(!sum)return '';
   var sp=stripAndPie(sum);
-  var chips='<div class="chips sumsel"><span class="sel-label">计入汇总：</span>'+STATE.resources.map(function(r){
+  var groups={};
+  STATE.resources.forEach(function(r){
+    var k=seriesKey(r.name);
+    if(!k)return;
+    (groups[k]=groups[k]||[]).push(r.name);
+  });
+  var seriesButtons='';
+  Object.keys(groups).sort().forEach(function(k){
+    if(groups[k].length<2)return;
+    var all=groups[k].every(function(n){return SUMSEL[n]});
+    seriesButtons+='<button class="chip series'+(all?' on':'')+'" data-sumseries="'+esc(k)+'" title="'+esc('系列快捷：一次选中或清除全部 '+k+' 系列（'+groups[k].join('、')+'）')+'">'+esc(k)+'</button>';
+  });
+  var chips='<div class="chips sumsel">'
+    +(seriesButtons?'<span class="sel-label">系列：</span>'+seriesButtons:'')
+    +'<span class="sel-label">计入汇总：</span>'+STATE.resources.map(function(r){
     return '<button class="chip'+(SUMSEL[r.name]?' on':'')+'" data-sum="'+esc(r.name)+'">'+esc(r.name)+'</button>';
   }).join('')+'<button class="chip" data-sumall="1">全选</button><button class="chip" data-sumall="0">清空</button></div>';
   return '<section class="res sumblock">'+chips
@@ -431,6 +454,12 @@ $('main').addEventListener('click',function(e){
   if(b.hasAttribute('data-sum')){
     var n=b.getAttribute('data-sum');
     SUMSEL[n]=!SUMSEL[n];
+    render();return;
+  }
+  if(b.hasAttribute('data-sumseries')){
+    var s=b.getAttribute('data-sumseries'),allOn=true;
+    STATE.resources.forEach(function(r){if(seriesKey(r.name)===s&&!SUMSEL[r.name])allOn=false});
+    STATE.resources.forEach(function(r){if(seriesKey(r.name)===s)SUMSEL[r.name]=!allOn});
     render();return;
   }
   if(b.hasAttribute('data-sumall')){
