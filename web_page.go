@@ -33,13 +33,14 @@ header{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:fle
 .tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--gold)}
 .tabs button:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
 main{min-height:180px}
-.noanim .fill,.noanim .dbar{transition:none}
+.noanim .fill,.noanim .queue{transition:none}
 .connecting{color:var(--dim);padding:46px 0;text-align:center}
+.leg-note{color:var(--dim)}
 .legend{display:flex;flex-wrap:wrap;gap:6px 22px;color:var(--dim);font-size:12.5px;margin:14px 0 4px}
 .sw{display:inline-block;width:11px;height:11px;margin-right:6px;vertical-align:-1px;border-radius:2px}
 .sw.b{background:var(--busy)}
+.sw.q{background:repeating-linear-gradient(45deg,rgba(224,86,79,.6) 0 2px,transparent 2px 5px)}
 .sw.f{border:1px solid #3a4c63}
-.sw.d{background:var(--full);height:4px;vertical-align:2px}
 .res{border-bottom:1px solid var(--line);padding:16px 0 12px}
 .res-head{display:grid;grid-template-columns:240px 1fr;gap:0 24px}
 .res-name{grid-row:1/4;font-family:var(--mono);font-size:15px;color:var(--gold);overflow-wrap:anywhere}
@@ -48,9 +49,8 @@ main{min-height:180px}
 .strip .cells{position:absolute;inset:0;display:flex;gap:2px}
 .strip .cell{flex:1;border:1px solid #223043;border-radius:2px}
 .strip .fill{position:absolute;top:0;bottom:0;left:0;background:var(--busy);transition:width .6s ease}
+.strip .queue{position:absolute;top:0;bottom:0;background:repeating-linear-gradient(45deg,rgba(224,86,79,.6) 0 4px,transparent 4px 9px);transition:width .6s ease}
 .strip.nores .cell{border-style:dashed}
-.demand{position:relative;height:3px;background:#1a2432;border-radius:2px;margin:4px 0 6px}
-.dbar{position:absolute;top:0;bottom:0;left:0;background:var(--full);border-radius:2px;transition:width .6s ease}
 .nums{color:var(--dim);font-size:13px;display:flex;flex-wrap:wrap;gap:2px 20px}
 .nums .n i{font-style:normal;margin-right:6px}
 .nums .n b{font-family:var(--mono);font-weight:600;color:var(--ink);font-variant-numeric:tabular-nums}
@@ -116,7 +116,7 @@ footer .err{color:var(--full)}
   .wrap{padding:16px 14px 48px}
 }
 @media(prefers-reduced-motion:reduce){
-  .strip .fill,.dbar{transition:none}
+  .strip .fill,.strip .queue{transition:none}
   .dot{animation:none}
 }
 </style>
@@ -159,21 +159,22 @@ function emptyMsg(){
 }
 function htmlCapacity(){
   if(STATE.resources.length===0)return emptyMsg();
-  var h='<div class="legend"><span><i class="sw b"></i>运行中请求（对应「占用」）</span><span><i class="sw f"></i>空闲可分配</span><span><i class="sw d"></i>需求（运行中+排队，对应「需求」，超出右缘即超配）</span></div>';
+  var h='<div class="legend"><span><i class="sw b"></i>运行中（琥珀实心，对应「占用」）</span><span><i class="sw q"></i>排队（红斜纹，画在运行中之后，对应「需求」）</span><span><i class="sw f"></i>空闲可分配</span><span class="leg-note">斜纹铺满右缘 = 排队需求已填满全部可分配</span></div>';
   STATE.resources.forEach(function(res,ri){
     var alloc=res.allocatable,run=res.running,pend=res.pending;
-    var fill=alloc>0?Math.min(100,run/alloc*100):0;
+    var fill=alloc>0?Math.min(100,run/alloc*100):(run>0?100:0);
     var demand=run+pend;
-    var dwidth=pend>0?(alloc>0?Math.min(100,demand/alloc*100):100):0;
+    var demandEnd=alloc>0?Math.min(100,demand/alloc*100):(pend>0?100:0);
+    var qW=Math.max(0,demandEnd-fill);
     var over=alloc>0&&demand>alloc?demand-alloc:0;
     var cells='';for(var c=0;c<24;c++)cells+='<i class="cell"></i>';
     var kind=res.unit!=='张'?'<span class="kind">（'+esc(res.unit)+'）</span>':'';
     h+='<section class="res"><div class="res-head">'
       +'<div class="res-name" title="'+esc(res.name)+'">'+esc(res.name)+kind+'</div>'
-      +'<div class="strip'+(alloc<=0?' nores':'')+'" title="运行中 '+fmtN(run)+' / 可分配 '+fmtN(alloc)+'">'
-      +(alloc>0?'<div class="fill" data-w="'+fill.toFixed(3)+'" style="width:0"></div>':'')
+      +'<div class="strip'+(alloc<=0?' nores':'')+'" title="琥珀实心 = 运行中 '+fmtN(run)+'（占用 '+fmtRatio(res.runRatio)+'）；红斜纹 = 排队 '+fmtN(pend)+' '+esc(res.unit)+'；斜纹铺满右缘即需求超过可分配">'
+      +(fill>0?'<div class="fill" data-w="'+fill.toFixed(3)+'" style="width:0"></div>':'')
+      +(qW>0?'<div class="queue" data-w="'+qW.toFixed(3)+'" style="width:0;left:'+fill.toFixed(3)+'%"></div>':'')
       +'<div class="cells">'+cells+'</div></div>'
-      +'<div class="demand">'+(pend>0?'<div class="dbar" data-w="'+dwidth.toFixed(3)+'" style="width:0"></div>':'')+'</div>'
       +'<div class="nums">'
       +'<span class="n"><i>总量</i><b>'+fmtN(res.total)+'</b></span>'
       +'<span class="n" title="占用 = 运行中 ÷ 可分配（与上方填充条一致）"><i>占用</i><b class="'+ratioCls(res.runRatio)+'">'+fmtRatio(res.runRatio)+'</b></span>'
