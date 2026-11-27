@@ -46,7 +46,24 @@ func newGHClient(path string) (*ghClient, error) {
 	return &ghClient{token: token, hc: &http.Client{Timeout: 20 * time.Second}, byRunner: map[string]ghPR{}}, nil
 }
 
+// get fetches with retries: the host's egress to api.github.com drops
+// connections under burst (observed: HTTP 000 resets mid-sweep), so a
+// transient failure never drops a whole project's mapping (ADR 0049).
 func (g *ghClient) get(url string, out interface{}) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		err = g.getOnce(url, out)
+		if err == nil {
+			return nil
+		}
+	}
+	return err
+}
+
+func (g *ghClient) getOnce(url string, out interface{}) error {
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return err
@@ -144,7 +161,7 @@ func (g *ghClient) refresh(a *webApp) {
 	next := map[string]ghPR{}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
+	sem := make(chan struct{}, 3) // burst beyond this resets connections on this egress
 	for project := range projects {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -190,7 +207,11 @@ func (g *ghClient) sweepProject(project string, boardRunners map[string]bool, ca
 	jobsByRunner := map[string]matched{}
 	active := 0
 	for _, run := range runs.WorkflowRuns {
-		if atomic.LoadInt32(calls) >= budget || active >= 30 {
+		// The per_page=50 list is created-desc, so long-running NPU e2e runs
+		// sit at the END — the cap must cover the whole list or our busiest
+		// repos lose exactly the runs their card-holding jobs live in
+		// (observed: sgl-project/sglang, 44 in-progress runs, 0/22 mapped).
+		if atomic.LoadInt32(calls) >= budget || active >= 50 {
 			break
 		}
 		var jobs struct {
