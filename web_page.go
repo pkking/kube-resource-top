@@ -180,7 +180,15 @@ function ratioCls(v){return v>=1?'hot':(v>=0.8?'warn':'')}
 // Hash assignment keeps a project's color stable across views/reloads.
 var PALETTE=['#3d7bff','#ff6fa3','#a06bff','#b8e04a','#d95fe8','#2ec5d8','#ff9edb','#35d0a0','#c9a0ff','#8d9bff'];
 function hashStr(s){var h=0;for(var i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))>>>0}return h}
-function pColor(name){return PALETTE[hashStr(name)%PALETTE.length]}
+// colorKey is the organization (ADR 0047): the first path segment of
+// org/repo identities, or the bare name — one org, one color, in every
+// tab and identity form.
+function colorKey(name){
+  if(!name)return '';
+  var i=name.indexOf('/');
+  return i>=0?name.slice(0,i):name;
+}
+function pColor(name){return PALETTE[hashStr(colorKey(name))%PALETTE.length]}
 function hexA(hex,a){return 'rgba('+parseInt(hex.slice(1,3),16)+','+parseInt(hex.slice(3,5),16)+','+parseInt(hex.slice(5,7),16)+','+a+')'}
 function projCell(name){
   if(!name)return '<span class="pdot un"></span>未标记';
