@@ -130,6 +130,9 @@ td.none{text-align:center;color:var(--dim)}
 .verdict.absent{border-color:var(--dim)}.verdict.absent b{color:var(--dim)}
 .verdict.empty{border-color:var(--free)}.verdict.empty b{color:var(--free)}
 .qt td:nth-child(3),.qt td:nth-child(4),.qt td:nth-child(5),.qt th:nth-child(3),.qt th:nth-child(4),.qt th:nth-child(5){text-align:left}
+.qta td:nth-child(4),.qta td:nth-child(5),.qta td:nth-child(6),.qta th:nth-child(4),.qta th:nth-child(5),.qta th:nth-child(6){text-align:left}
+.verdict.agg b{color:var(--gold)}
+.verdict.agg .v{margin-right:12px;white-space:nowrap}
 tr.mine td{background:rgba(210,164,78,.13)}
 .qinfo{color:var(--dim);font-size:12.5px;margin:6px 2px 0}
 footer{margin-top:36px;color:var(--dim);font-size:12.5px;border-top:1px solid var(--line);padding-top:12px}
@@ -414,40 +417,105 @@ function htmlCapacity(){
   });
   return h;
 }
+// qMembers resolves QRES into the member resources for the queue view:
+// '__all__', '__series:<key>', or one resource name (ADR 0046).
+function qMembers(){
+  if(QRES==='__all__')return {list:STATE.resources,label:'全部',agg:true};
+  if(QRES.indexOf('__series:')===0){
+    var s=QRES.slice('__series:'.length);
+    return {list:STATE.resources.filter(function(r){return seriesKey(r.name)===s}),label:s,agg:true};
+  }
+  var one=STATE.resources.filter(function(r){return r.name===QRES});
+  return one.length?{list:one,label:one[0].name,agg:false}:null;
+}
+function qSort(a,b){
+  if((a.oldestSince===0)!==(b.oldestSince===0))return a.oldestSince===0?1:-1;
+  if(a.oldestSince!==b.oldestSince)return a.oldestSince<b.oldestSince?-1:1;
+  return a.namespace+'\x00'+a.workload<b.namespace+'\x00'+b.workload?-1:1;
+}
 function htmlQueue(){
   if(STATE.resources.length===0)return emptyMsg();
-  if(!QRES){
-    var first=null;
-    STATE.resources.forEach(function(r){if(!first&&r.pending>0)first=r});
-    QRES=(first||STATE.resources[0]).name;
-  }
-  var h='<div class="chips">';
+  if(!QRES)QRES='__all__';
+  var m=qMembers();
+  if(!m){QRES=STATE.resources[0].name;m=qMembers()}
+  var totalPend=0;
+  STATE.resources.forEach(function(r){totalPend+=r.pending});
+  var h='<div class="chips">'
+    +'<button class="chip'+(QRES==='__all__'?' on':'')+'" data-res="__all__">全部'+(totalPend>0?'<b>排队 '+fmtN(totalPend)+'</b>':'<b>无排队</b>')+'</button>';
+  var groups={};
+  STATE.resources.forEach(function(r){var k=seriesKey(r.name);if(k)(groups[k]=groups[k]||[]).push(r)});
+  Object.keys(groups).sort().forEach(function(k){
+    if(groups[k].length<2)return;
+    var pend=0;groups[k].forEach(function(r){pend+=r.pending});
+    var on=QRES==='__series:'+k;
+    h+='<button class="chip series'+(on?' on':'')+'" data-res="__series:'+esc(k)+'">'+esc(k)+(pend>0?'<b>排队 '+fmtN(pend)+'</b>':'<b>无排队</b>')+'</button>';
+  });
   STATE.resources.forEach(function(r){
     h+='<button class="chip'+(r.name===QRES?' on':'')+'" data-res="'+esc(r.name)+'"><span class="st '+chipState(r)+'"></span>'+esc(r.name)+(r.pending>0?'<b>排队 '+fmtN(r.pending)+'</b>':'<b>无排队</b>')+'</button>';
   });
   h+='</div>';
-  var res=null;
-  STATE.resources.forEach(function(r){if(r.name===QRES)res=r});
-  if(!res)return emptyMsg();
   h+='<div class="searchrow"><input id="qsearch" type="text" placeholder="找我的任务（名称或命名空间）…" value="'+esc(QUERY)+'"><span class="mline" id="mline"></span></div>';
   var q=QUERY.trim().toLowerCase();
   MINE=[];
-  res.clusters.forEach(function(c){
-    var name=cname(c.cluster);
-    h+='<section class="qsec"><h2>'+esc(name)+(c.absent?'<span class="abs">无此资源</span>':'')+'</h2>'
-      +'<div class="verdict '+c.verdict+'"><b>'+vWord(c.verdict)+'</b>'+esc(c.note)+'</div>';
-    var rows='',ahead=0;
-    c.queue.forEach(function(g){
-      if(q&&(g.namespace+' '+g.workload+' '+(g.project||'')).toLowerCase().indexOf(q)<0){ahead+=g.demand;return}
-      if(q)MINE.push('「'+g.workload+'」在 '+name+' 排第 '+g.position+' 位（'+(g.project||'未标记')+'），前方还需 '+fmtN(ahead)+' '+res.unit+'，已等待 '+(g.oldestSince?fmtAge(now()-g.oldestSince):'未知时长'));
-      rows+='<tr'+(q?' class="mine"':'')+'><td>#'+g.position+'</td><td data-since="'+g.oldestSince+'">'+(g.oldestSince?fmtAge(now()-g.oldestSince):'—')+'</td><td>'+esc(g.namespace)+'</td><td class="mono">'+esc(g.workload)+'</td><td>'+projCell(g.project)+'</td><td>'+fmtN(g.demand)+'</td><td>'+(g.position===1?'—':fmtN(ahead))+'</td></tr>';
-      ahead+=g.demand;
+  var anyQueue=false;
+  if(m.agg){
+    // Aggregate view (ADR 0046): merge member resources' queues per cluster,
+    // re-rank by creation time, and summarize each resource's verdict.
+    var byCluster={};
+    m.list.forEach(function(res){
+      (res.clusters||[]).forEach(function(c){
+        var e=byCluster[c.cluster];
+        if(!e){e=byCluster[c.cluster]={queue:[],verdicts:[],pending:0};}
+        (c.queue||[]).forEach(function(g){
+          e.queue.push({resource:res.name,namespace:g.namespace,workload:g.workload,project:g.project,demand:g.demand,oldestSince:g.oldestSince});
+        });
+        e.verdicts.push({resource:res.name,verdict:c.verdict,note:c.note});
+        e.pending+=c.pending;
+      });
     });
-    if(q&&rows==='')rows='<tr><td colspan="7" class="none">没有匹配的任务</td></tr>';
-    h+='<div class="scroll"><table class="qt"><thead><tr><th>排位</th><th>已等待</th><th>命名空间</th><th>任务</th><th>项目</th><th>需求（'+esc(res.unit)+'）</th><th>前方需求</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
-    if(c.queue.length>0)h+='<p class="qinfo">'+fmtN(c.queue.length)+' 个任务在排队，共需 '+fmtN(c.pending)+' '+esc(res.unit)+'。</p>';
-    h+='</section>';
-  });
+    Object.keys(byCluster).sort(function(a,b){return cname(a)<cname(b)?-1:1}).forEach(function(cid){
+      var e=byCluster[cid];
+      if(!e.queue.length)return;
+      anyQueue=true;
+      var name=cname(cid);
+      e.queue.sort(qSort);
+      e.queue.forEach(function(g,i){g.position=i+1});
+      h+='<section class="qsec"><h2>'+esc(name)+'</h2>'
+        +'<div class="verdict agg"><b>'+esc(m.label)+' 汇总</b>'+e.verdicts.map(function(v){
+          return '<span class="v '+v.verdict+'" title="'+esc(v.resource+'：'+v.note)+'">'+esc(v.resource)+' '+vState(v.verdict)+'</span>';
+        }).join(' ')+'</div>';
+      var rows='',ahead=0;
+      e.queue.forEach(function(g){
+        if(q&&(g.namespace+' '+g.workload+' '+(g.project||'')+' '+g.resource).toLowerCase().indexOf(q)<0){ahead+=g.demand;return}
+        if(q)MINE.push('「'+g.workload+'」在 '+name+'（需 '+g.resource+'）排第 '+g.position+' 位'+(g.project?'（'+g.project+'）':'')+'，前方还需 '+fmtN(ahead)+'，已等待 '+(g.oldestSince?fmtAge(now()-g.oldestSince):'未知时长'));
+        rows+='<tr'+(q?' class="mine"':'')+'><td>#'+g.position+'</td><td data-since="'+g.oldestSince+'">'+(g.oldestSince?fmtAge(now()-g.oldestSince):'—')+'</td><td class="mono dim">'+esc(g.resource)+'</td><td>'+esc(g.namespace)+'</td><td class="mono">'+esc(g.workload)+'</td><td>'+projCell(g.project)+'</td><td>'+fmtN(g.demand)+'</td><td>'+(g.position===1?'—':fmtN(ahead))+'</td></tr>';
+        ahead+=g.demand;
+      });
+      if(q&&rows==='')rows='<tr><td colspan="8" class="none">没有匹配的任务</td></tr>';
+      h+='<div class="scroll"><table class="qta"><thead><tr><th>排位</th><th>已等待</th><th>资源</th><th>命名空间</th><th>任务</th><th>项目</th><th>需求</th><th>前方需求</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+      h+='<p class="qinfo">'+fmtN(e.queue.length)+' 个任务在排队，共需 '+fmtN(e.pending)+'（跨型号合并，按创建时间近似排序）。</p>';
+      h+='</section>';
+    });
+    if(!anyQueue&&!q)h+='<div class="connecting">'+esc(m.label)+'没有排队任务。</div>';
+  }else{
+    var res=m.list[0];
+    (res.clusters||[]).forEach(function(c){
+      var name=cname(c.cluster);
+      h+='<section class="qsec"><h2>'+esc(name)+(c.absent?'<span class="abs">无此资源</span>':'')+'</h2>'
+        +'<div class="verdict '+c.verdict+'"><b>'+vWord(c.verdict)+'</b>'+esc(c.note)+'</div>';
+      var rows='',ahead=0;
+      c.queue.forEach(function(g){
+        if(q&&(g.namespace+' '+g.workload+' '+(g.project||'')).toLowerCase().indexOf(q)<0){ahead+=g.demand;return}
+        if(q)MINE.push('「'+g.workload+'」在 '+name+' 排第 '+g.position+' 位（'+(g.project||'未标记')+'），前方还需 '+fmtN(ahead)+' '+res.unit+'，已等待 '+(g.oldestSince?fmtAge(now()-g.oldestSince):'未知时长'));
+        rows+='<tr'+(q?' class="mine"':'')+'><td>#'+g.position+'</td><td data-since="'+g.oldestSince+'">'+(g.oldestSince?fmtAge(now()-g.oldestSince):'—')+'</td><td>'+esc(g.namespace)+'</td><td class="mono">'+esc(g.workload)+'</td><td>'+projCell(g.project)+'</td><td>'+fmtN(g.demand)+'</td><td>'+(g.position===1?'—':fmtN(ahead))+'</td></tr>';
+        ahead+=g.demand;
+      });
+      if(q&&rows==='')rows='<tr><td colspan="7" class="none">没有匹配的任务</td></tr>';
+      h+='<div class="scroll"><table class="qt"><thead><tr><th>排位</th><th>已等待</th><th>命名空间</th><th>任务</th><th>项目</th><th>需求（'+esc(res.unit)+'）</th><th>前方需求</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+      if(c.queue.length>0)h+='<p class="qinfo">'+fmtN(c.queue.length)+' 个任务在排队，共需 '+fmtN(c.pending)+' '+esc(res.unit)+'。</p>';
+      h+='</section>';
+    });
+  }
   if(q&&MINE.length===0)MINE.push('没有找到匹配「'+esc(QUERY.trim())+'」的任务');
   return h;
 }
