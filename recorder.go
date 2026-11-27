@@ -229,7 +229,10 @@ func readHistory(dir, resource, cluster string, from, to time.Time, maxPoints in
 	}
 	bucket := int64(to.Sub(from).Seconds()/float64(maxPoints)) + 1
 	last := map[bucketKey]recordLine{}
-	for day := from.UTC(); !day.After(to); day = day.AddDate(0, 0, 1) {
+	// Iterate UTC calendar days: from.Truncate(24h) lands on UTC midnight,
+	// so a range crossing midnight opens both days' files (bug: stepping
+	// from+24h skipped the current day between 00:00 and 01:00 UTC).
+	for day := from.Truncate(24 * time.Hour).UTC(); !day.After(to); day = day.AddDate(0, 0, 1) {
 		name := "history-" + day.Format("2006-01-02") + ".jsonl"
 		path := filepath.Join(dir, name)
 		f, err := os.Open(path)

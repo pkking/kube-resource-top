@@ -84,7 +84,9 @@ func writeRec(t *testing.T, dir string, at int64, cluster, resource string, run,
 func TestReadHistoryBucketsAndAggregation(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	base := now.Add(-50 * time.Minute).Unix()
+	// Samples align to the 13-second bucket grid (3600s/288+1) so that
+	// base and base+5 deterministically share one bucket.
+	base := (now.Unix()/13)*13 - 2400
 	// Same bucket for c1: the later sample wins (bucket ~13s).
 	writeRec(t, dir, base, "c1", "R", 10, 0)
 	writeRec(t, dir, base+5, "c1", "R", 12, 0)
@@ -119,5 +121,23 @@ func TestReadHistoryBucketsAndAggregation(t *testing.T) {
 	}
 	if len(c2) != 2 || c2[0].Run != 4 || c2[0].Pend != 2 || c2[1].Run != 6 {
 		t.Errorf("cluster filter = %+v", c2)
+	}
+}
+
+func TestReadHistoryAcrossUTCMidnight(t *testing.T) {
+	// Regression: the day loop stepped from+24h without truncating to UTC
+	// midnight, so between 00:00 and 01:00 UTC the current day's file was
+	// never opened and recent history silently vanished.
+	dir := t.TempDir()
+	day1 := time.Date(2026, 11, 26, 23, 59, 0, 0, time.UTC)
+	day2 := day1.Add(2 * time.Minute)
+	writeRec(t, dir, day1.Unix(), "c1", "R", 10, 0)
+	writeRec(t, dir, day2.Unix(), "c1", "R", 12, 0)
+	points, err := readHistory(dir, "R", "all", day1.Add(-time.Hour), day2.Add(time.Hour), 288)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 2 || points[0].Run != 10 || points[1].Run != 12 {
+		t.Fatalf("across-midnight read = %+v, want runs 10 then 12", points)
 	}
 }
