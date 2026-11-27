@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -67,7 +68,7 @@ func (g *ghClient) get(url string, out interface{}) error {
 func (g *ghClient) start(ctx context.Context, a *webApp) {
 	// Startup retries: the first refreshes race the watcher sync, so keep
 	// trying briefly until the cache holds something (or settle for the
-	// steady 2-minute tick when nothing maps at all, e.g. at night).
+	// steady 3-minute tick when nothing maps at all, e.g. at night).
 	for i := 0; i < 5; i++ {
 		select {
 		case <-ctx.Done():
@@ -82,7 +83,7 @@ func (g *ghClient) start(ctx context.Context, a *webApp) {
 			break
 		}
 	}
-	tick := time.NewTicker(2 * time.Minute)
+	tick := time.NewTicker(3 * time.Minute)
 	defer tick.Stop()
 	for {
 		select {
@@ -115,80 +116,151 @@ type ghJob struct {
 	HTMLURL    string `json:"html_url"`
 }
 
-// refresh walks projects that currently hold running tasks: recent runs →
-// in-progress jobs → runner names (ADR 0045). Any API failure skips that
-// piece; the cache degrades to missing entries, never to guessed numbers.
+// refresh sweeps widely within a fixed budget (ADR 0049): fifty
+// in-progress runs and up to thirty runs' jobs per project, PR numbers
+// only for runs whose jobs matched an actual board runner. Projects
+// sweep in parallel (8 workers); budgets count atomically. Any API
+// failure skips that piece; the cache degrades to missing entries,
+// never to guessed links.
 func (g *ghClient) refresh(a *webApp) {
-	const budget = 80 // calls per refresh, ≤ 2400/h
+	const budget = 200 // calls per 3-minute refresh, ≤ 4000/h
+	const prBudget = 25
 	projects := map[string]bool{}
+	boardRunners := map[string]bool{}
 	st := a.state()
 	for _, res := range st.Resources {
 		for _, t := range res.Tasks {
 			if t.Run > 0 && strings.Contains(t.Project, "/") {
 				projects[t.Project] = true
 			}
+			name := t.Workload
+			if i := strings.Index(name, "/"); i >= 0 {
+				name = name[i+1:]
+			}
+			boardRunners[strings.TrimSuffix(name, "-workflow")] = true
 		}
 	}
+	var calls, prCalls int32
 	next := map[string]ghPR{}
-	calls := 0
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
 	for project := range projects {
-		if calls >= budget {
-			break
-		}
-		var runs struct {
-			WorkflowRuns []ghRun `json:"workflow_runs"`
-		}
-		// Only in-progress runs carry runner names in their jobs; on a busy
-		// repo they fall outside a plain recent-runs list, so filter by
-		// status instead of paging through completed history.
-		if err := g.get("https://api.github.com/repos/"+project+"/actions/runs?per_page=15&status=in_progress", &runs); err != nil {
-			continue
-		}
-		calls++
-		active := 0
-		for _, run := range runs.WorkflowRuns {
-			if calls >= budget || active >= 5 || run.Status != "in_progress" {
-				continue
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(project string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			local := g.sweepProject(project, boardRunners, &calls, &prCalls, budget, prBudget)
+			if len(local) == 0 {
+				return
 			}
-			var jobs struct {
-				Jobs []ghJob `json:"jobs"`
+			mu.Lock()
+			for k, v := range local {
+				next[k] = v
 			}
-			if err := g.get(fmt.Sprintf("https://api.github.com/repos/%s/actions/runs/%d/jobs?per_page=50", project, run.ID), &jobs); err != nil {
-				continue
-			}
-			calls++
-			active++
-			pr := g.prNumber(project, run) // resolve once per run, not per job
-			for _, job := range jobs.Jobs {
-				if job.RunnerName == "" {
-					continue
-				}
-				next[job.RunnerName] = ghPR{PR: pr, RunURL: run.HTMLURL, JobURL: job.HTMLURL, Branch: run.HeadBranch, Workflow: workflowName(run.Path)}
-			}
-		}
+			mu.Unlock()
+		}(project)
 	}
+	wg.Wait()
 	g.mu.Lock()
 	g.byRunner = next
 	g.mu.Unlock()
 }
 
+// sweepProject collects runner → PR info for one project (ADR 0049).
+func (g *ghClient) sweepProject(project string, boardRunners map[string]bool, calls, prCalls *int32, budget, prBudget int32) map[string]ghPR {
+	if atomic.LoadInt32(calls) >= budget {
+		return nil
+	}
+	var runs struct {
+		WorkflowRuns []ghRun `json:"workflow_runs"`
+	}
+	// Only in-progress runs carry runner names in their jobs; on a busy
+	// repo they fall outside a plain recent-runs list, so filter by
+	// status instead of paging through completed history.
+	if err := g.get("https://api.github.com/repos/"+project+"/actions/runs?per_page=50&status=in_progress", &runs); err != nil {
+		return nil
+	}
+	atomic.AddInt32(calls, 1)
+	type matched struct {
+		run ghRun
+		job ghJob
+	}
+	jobsByRunner := map[string]matched{}
+	active := 0
+	for _, run := range runs.WorkflowRuns {
+		if atomic.LoadInt32(calls) >= budget || active >= 30 {
+			break
+		}
+		var jobs struct {
+			Jobs []ghJob `json:"jobs"`
+		}
+		if err := g.get(fmt.Sprintf("https://api.github.com/repos/%s/actions/runs/%d/jobs?per_page=50", project, run.ID), &jobs); err != nil {
+			continue
+		}
+		atomic.AddInt32(calls, 1)
+		active++
+		for _, job := range jobs.Jobs {
+			if job.RunnerName == "" || !boardRunners[job.RunnerName] {
+				continue
+			}
+			if _, seen := jobsByRunner[job.RunnerName]; seen {
+				continue // first run wins
+			}
+			jobsByRunner[job.RunnerName] = matched{run: run, job: job}
+		}
+	}
+	// PR resolution spends calls only on runs the board actually shows.
+	prByRun := map[int64]int{}
+	for _, m := range jobsByRunner {
+		if atomic.LoadInt32(calls) >= budget || atomic.LoadInt32(prCalls) >= prBudget {
+			break
+		}
+		if _, done := prByRun[m.run.ID]; done {
+			continue
+		}
+		pr, used := g.prNumber(project, m.run)
+		atomic.AddInt32(calls, int32(used))
+		atomic.AddInt32(prCalls, int32(used))
+		prByRun[m.run.ID] = pr
+	}
+	out := map[string]ghPR{}
+	for runner, m := range jobsByRunner {
+		out[runner] = ghPR{PR: prByRun[m.run.ID], RunURL: m.run.HTMLURL, JobURL: m.job.HTMLURL, Branch: m.run.HeadBranch, Workflow: workflowName(m.run.Path)}
+	}
+	return out
+}
+
 // prNumber resolves a run's PR by fallback order (ADR 0045): the run's
 // own pull_requests, commits/{sha}/pulls, then a head-branch lookup —
-// the run's field is notoriously sparse for pull_request events.
-func (g *ghClient) prNumber(project string, run ghRun) int {
+// the run's field is notoriously sparse for pull_request events. It
+// returns the PR number and the calls it spent, failed or not.
+func (g *ghClient) prNumber(project string, run ghRun) (int, int) {
 	if len(run.PullRequests) > 0 && run.PullRequests[0].Number > 0 {
-		return run.PullRequests[0].Number
+		return run.PullRequests[0].Number, 0
 	}
+	used := 0
 	var pulls []ghPull
-	if err := g.get("https://api.github.com/repos/"+project+"/commits/"+run.HeadSHA+"/pulls", &pulls); err == nil && len(pulls) > 0 && pulls[0].Number > 0 {
-		return pulls[0].Number
+	if err := g.get("https://api.github.com/repos/"+project+"/commits/"+run.HeadSHA+"/pulls", &pulls); err == nil {
+		used++
+		if len(pulls) > 0 && pulls[0].Number > 0 {
+			return pulls[0].Number, used
+		}
+	} else {
+		used++
 	}
 	org, _, _ := strings.Cut(project, "/")
 	var byHead []ghPull
-	if err := g.get("https://api.github.com/repos/"+project+"/pulls?head="+org+":"+url.QueryEscape(run.HeadBranch)+"&per_page=1", &byHead); err == nil && len(byHead) > 0 {
-		return byHead[0].Number
+	if err := g.get("https://api.github.com/repos/"+project+"/pulls?head="+org+":"+url.QueryEscape(run.HeadBranch)+"&per_page=1", &byHead); err == nil {
+		used++
+		if len(byHead) > 0 {
+			return byHead[0].Number, used
+		}
+	} else {
+		used++
 	}
-	return 0
+	return 0, used
 }
 
 // lookup maps a task workload to its PR info by runner name: the kind
