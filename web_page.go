@@ -49,8 +49,8 @@ main{min-height:180px}
 .strip{position:relative;height:22px}
 .strip .cells{position:absolute;inset:0;display:flex;gap:2px}
 .strip .cell{flex:1;border:1px solid #223043;border-radius:2px}
-.seg{position:absolute;top:0;bottom:0;transition:width .6s ease;border-right:1px solid rgba(11,16,23,.9)}
-.seg.zseg{border-left:2px solid rgba(11,16,23,.95)}
+.seg{position:absolute;top:0;bottom:0;transition:width .6s ease;border-right:1.5px solid rgba(11,16,23,.95)}
+.seg.zseg{border-left:2.5px solid rgba(11,16,23,.97)}
 .strip.nores .cell{border-style:dashed}
 .res-pie{grid-column:3;grid-row:1/3;align-self:center;justify-self:center}
 .donutwrap{position:relative;width:88px;height:88px}
@@ -238,9 +238,9 @@ function stripAndPie(res){
     if(run>0&&p.running>0){
       var list=(byProjTask[pk]||[]).slice().sort(function(a,b){return b.run-a.run});
       if(!list.length)list=[{run:p.running,workload:'',cluster:''}];
-      var shown=list.slice(0,8);
+      var shown=list.slice(0,64);
       var restRun=0,restN=list.length-shown.length;
-      list.slice(8).forEach(function(t){restRun+=t.run});
+      list.slice(64).forEach(function(t){restRun+=t.run});
       if(restN>0)shown=shown.concat([{run:restRun,workload:'__rest__',cluster:'',restN:restN}]);
       shown.forEach(function(t,i){
         var w=t.run/run*fill;
@@ -260,9 +260,9 @@ function stripAndPie(res){
         });
       });
       qlist.sort(function(a,b){return b.demand-a.demand});
-      var qshown=qlist.slice(0,6);
+      var qshown=qlist.slice(0,24);
       var qrest=0,qrestN=qlist.length-qshown.length;
-      qlist.slice(6).forEach(function(g){qrest+=g.demand});
+      qlist.slice(24).forEach(function(g){qrest+=g.demand});
       if(qrestN>0)qshown=qshown.concat([{workload:'__rest__',demand:qrest,cluster:'',restN:qrestN}]);
       qshown.forEach(function(g,i){
         var qw=g.demand/pend*qW;
