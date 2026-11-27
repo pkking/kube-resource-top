@@ -233,9 +233,10 @@ function stripAndPie(res){
       if(restN>0)shown=shown.concat([{run:restRun,workload:'__rest__',cluster:'',restN:restN}]);
       shown.forEach(function(t,i){
         var w=t.run/run*fill;
+        var ident=t.pr?'（PR #'+t.pr+'）':(t.branch?'（分支 '+t.branch+'）':'');
         var tt=t.workload==='__rest__'
           ?'其他 '+t.restN+' 个任务，共 '+fmtN(t.run)+' '+esc(res.unit)+'（'+zname+'）'
-          :'任务 '+esc(t.workload)+'（'+zname+'，'+esc(cname(t.cluster))+'）：运行 '+fmtN(t.run)+' '+esc(res.unit);
+          :'任务 '+esc(t.workload)+ident+'（'+zname+'，'+esc(cname(t.cluster))+'）：运行 '+fmtN(t.run)+' '+esc(res.unit);
         segs+='<div class="seg'+(i===0?' zseg':'')+'" data-w="'+w.toFixed(3)+'" style="width:0;left:'+cum.toFixed(3)+'%;background:'+color+'" title="'+tt+'"></div>';
         cum+=w;
       });
@@ -331,6 +332,11 @@ function sumAggregate(){
   return {name:'汇总',unit:unit,total:t,allocatable:alloc,running:run,pending:pend,projects:projs,
     runRatio:alloc>0?run/alloc:-1,ratio:alloc>0?(run+pend)/alloc:-1};
 }
+function prCell(t){
+  if(t.pr&&t.project&&t.project.indexOf('/')>=0)return '<a href="https://github.com/'+esc(t.project)+'/pull/'+t.pr+'" target="_blank" rel="noopener" title="'+esc(t.branch||'')+'">#'+t.pr+'</a>';
+  if(t.branch)return '<span class="dim" title="GitHub 未关联 PR，显示分支名">'+esc(t.branch)+'</span>';
+  return '—';
+}
 // seriesKey derives a hardware series from a resource name (ADR 0039):
 // everything up to the last letter-or-dash that directly precedes the
 // terminal variant. 910B1 → 910B, 910C560T → 910C.
@@ -386,11 +392,11 @@ function htmlCapacity(){
       }).join('')
       +'</tbody></table></div></details>'
       +'<details class="clusters" id="dt'+ri+'"'+(OPEN['dt'+ri]?' open':'')+'><summary>任务明细 · '+(res.tasks||[]).length+'</summary><div class="scroll"><table>'
-      +'<thead><tr><th>任务</th><th>项目</th><th>集群</th><th>运行（'+esc(res.unit)+'）</th></tr></thead><tbody>'
+      +'<thead><tr><th>任务</th><th>项目</th><th>PR</th><th>集群</th><th>运行（'+esc(res.unit)+'）</th></tr></thead><tbody>'
       +(res.tasks||[]).slice(0,40).map(function(t){
-        return '<tr><td>'+esc(t.workload)+'</td><td>'+(t.project?projCell(t.project):'<span class="pdot un"></span>未标记')+'</td><td>'+esc(cname(t.cluster))+'</td><td>'+fmtN(t.run)+'</td></tr>';
+        return '<tr><td>'+(t.jobUrl?'<a href="'+esc(t.jobUrl)+'" target="_blank" rel="noopener">'+esc(t.workload)+'</a>':esc(t.workload))+'</td><td>'+(t.project?projCell(t.project):'<span class="pdot un"></span>未标记')+'</td><td>'+prCell(t)+'</td><td>'+esc(cname(t.cluster))+'</td><td>'+fmtN(t.run)+'</td></tr>';
       }).join('')
-      +((res.tasks||[]).length>40?'<tr><td colspan="4" class="none">仅显示前 40 个，共 '+fmtN((res.tasks||[]).length)+' 个任务</td></tr>':'')
+      +((res.tasks||[]).length>40?'<tr><td colspan="5" class="none">仅显示前 40 个，共 '+fmtN((res.tasks||[]).length)+' 个任务</td></tr>':'')
       +'</tbody></table></div></details>'
       +'<details class="clusters" id="dc'+ri+'"'+(OPEN['dc'+ri]?' open':'')+'><summary>集群明细 · '+res.clusters.length+'</summary><div class="scroll"><table>'
       +'<thead><tr><th>集群</th><th>总量</th><th>运行中</th><th>排队</th><th>可分配</th><th>空闲</th><th>空闲机器</th><th>单机最大空闲</th><th>状态</th></tr></thead><tbody>';

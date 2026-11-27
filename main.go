@@ -142,6 +142,7 @@ func main() {
 	webRecord := flag.String("web-record", "", "record occupancy history as JSONL into this directory (enables the history view; requires --web)")
 	webRecordInterval := flag.Duration("web-record-interval", time.Minute, "occupancy sampling interval for --web-record")
 	webRecordKeep := flag.Int("web-record-keep", 30, "days of history files to keep")
+	ghToken := flag.String("github-token", "", "path to a GitHub token file with actions:read; maps running ARC tasks to their PRs")
 	flag.Parse()
 	if *dir == "" {
 		fmt.Fprintln(os.Stderr, "--kubeconfig-dir is required")
@@ -155,7 +156,7 @@ func main() {
 		if *webRecord != "" {
 			rec = newWebRecorder(*webRecord, *webRecordInterval, *webRecordKeep)
 		}
-		if err := runWeb(*webAddr, *dir, *configPath, rec); err != nil {
+		if err := runWeb(*webAddr, *dir, *configPath, rec, *ghToken); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}

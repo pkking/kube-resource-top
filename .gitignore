@@ -9,3 +9,4 @@ kube-resource-top
 !go.mod
 !go.sum
 .scratch/
+gh-token.txt

@@ -33,13 +33,14 @@ type webApp struct {
 	resourceSelected map[corev1.ResourceName]bool
 	selected         map[string]bool
 	rec              *webRecorder
+	gh               *ghClient
 }
 
 // runWeb replaces the TUI with the dashboard server. Discovery, config, and
 // target selection follow the same rules as main(); there is no interactive
 // selector, so the persisted selection is used as saved and unreachable
 // clusters surface through their snapshot errors.
-func runWeb(addr, dir, configPath string, rec *webRecorder) error {
+func runWeb(addr, dir, configPath string, rec *webRecorder, ghToken string) error {
 	targets, _, err := discover(dir)
 	if err != nil {
 		return err
@@ -86,6 +87,15 @@ func runWeb(addr, dir, configPath string, rec *webRecorder) error {
 	}()
 	if rec != nil {
 		go rec.run(ctx, app)
+	}
+	if ghToken != "" {
+		if gh, err := newGHClient(ghToken); err == nil {
+			app.gh = gh
+			go gh.start(ctx, app)
+			fmt.Printf("PR 映射已启用（GitHub token 已加载）\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "PR 映射未启用：%v\n", err)
+		}
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/state.json", app.handleState)
@@ -223,12 +233,18 @@ type webClusterRes struct {
 }
 
 // webTask is one workload's running demand for a resource (ADR 0042),
-// unaggregated — the page owns the per-zone display policy.
+// unaggregated — the page owns the per-zone display policy. PR fields
+// carry the GitHub mapping when a token is configured (ADR 0045).
 type webTask struct {
 	Cluster  string  `json:"cluster"` // target ID; the page maps it to a name
 	Workload string  `json:"workload"`
 	Project  string  `json:"project"`
 	Run      float64 `json:"run"`
+	PR       int     `json:"pr,omitempty"`
+	RunURL   string  `json:"runUrl,omitempty"`
+	JobURL   string  `json:"jobUrl,omitempty"`
+	Branch   string  `json:"branch,omitempty"`
+	Workflow string  `json:"workflow,omitempty"`
 }
 
 // webResource is the cross-cluster aggregate for one resource type.
@@ -345,6 +361,18 @@ func (a *webApp) state() webState {
 		})
 		if res.Tasks == nil {
 			res.Tasks = []webTask{}
+		}
+		// Attach the GitHub PR mapping by runner name (ADR 0045).
+		if a.gh != nil {
+			for i := range res.Tasks {
+				if info, ok := a.gh.lookup(res.Tasks[i].Workload); ok {
+					res.Tasks[i].PR = info.PR
+					res.Tasks[i].RunURL = info.RunURL
+					res.Tasks[i].JobURL = info.JobURL
+					res.Tasks[i].Branch = info.Branch
+					res.Tasks[i].Workflow = info.Workflow
+				}
+			}
 		}
 		// Demand first, then name; the unattributed "" sorts where its
 		// demand puts it, exactly like any project.
